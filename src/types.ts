@@ -48,12 +48,16 @@ export interface UserSettings {
 export interface ModelPreset {
   id: string;
   name: string;
+  family: "vosk" | "whisper" | "funasr" | "qwen";
+  installKind: "autoZip" | "engineRequired";
   size: string;
   quality: string;
   memory: string;
   recommendedFor: string;
   license: string;
   downloadUrl: string;
+  engineNote: string;
+  archiveRoot?: string;
 }
 
 export interface DiagnosticItem {

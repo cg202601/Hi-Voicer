@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
-import type { UserSettings } from "../types";
+import type { ModelPreset, UserSettings } from "../types";
 
 const STORAGE_KEY = "hi-voicer-settings";
 
@@ -25,6 +25,12 @@ export async function saveSettings(settings: UserSettings): Promise<UserSettings
 
 export async function selectDirectory(): Promise<string | null> {
   try {
+    return await invoke<string | null>("select_directory");
+  } catch {
+    // Fall through to the browser/Tauri plugin path.
+  }
+
+  try {
     const selected = await openDialog({
       directory: true,
       multiple: false,
@@ -42,4 +48,19 @@ export async function openExternalUrl(url: string): Promise<void> {
   } catch {
     window.open(url, "_blank", "noopener,noreferrer");
   }
+}
+
+export async function installModel(model: ModelPreset): Promise<string> {
+  if (model.installKind !== "autoZip") {
+    throw new Error(model.engineNote);
+  }
+
+  return await invoke<string>("install_model", {
+    model: {
+      id: model.id,
+      name: model.name,
+      downloadUrl: model.downloadUrl,
+      archiveRoot: model.archiveRoot,
+    },
+  });
 }

@@ -30,7 +30,7 @@ describe("SettingsPage", () => {
 
     render(<SettingsPage settings={initialSettings} onSettingsChange={onSettingsChange} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /中文高精度模型/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Vosk 中文高精度/ }));
 
     expect(onSettingsChange).toHaveBeenCalledWith(
       expect.objectContaining({

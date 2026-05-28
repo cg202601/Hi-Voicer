@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { useState } from "react";
 import { SettingRow } from "../components/SettingRow";
 import { modelPresets } from "../data/modelPresets";
-import { openExternalUrl, selectDirectory } from "../lib/api";
+import { installModel, openExternalUrl, selectDirectory } from "../lib/api";
 import type { UserSettings } from "../types";
 
 interface SettingsPageProps {
@@ -49,12 +49,22 @@ function formatShortcut(event: KeyboardEvent<HTMLButtonElement>) {
 
 export function SettingsPage({ settings, onSettingsChange }: SettingsPageProps) {
   const [isCapturingShortcut, setIsCapturingShortcut] = useState(false);
+  const [modelMessage, setModelMessage] = useState("");
+  const [installingModelId, setInstallingModelId] = useState<string | null>(null);
   const selectedModel = modelPresets.find((model) => model.id === settings.selectedModelId) ?? modelPresets[0];
 
   async function handleSelectModelDir() {
-    const selected = await selectDirectory();
-    if (selected) {
-      onSettingsChange({ ...settings, modelDir: selected });
+    try {
+      setModelMessage("");
+      const selected = await selectDirectory();
+      if (selected) {
+        onSettingsChange({ ...settings, modelDir: selected });
+        setModelMessage("模型目录已保存。");
+      } else {
+        setModelMessage("没有选择目录。");
+      }
+    } catch (error) {
+      setModelMessage(error instanceof Error ? error.message : "打开目录选择失败。");
     }
   }
 
@@ -62,6 +72,26 @@ export function SettingsPage({ settings, onSettingsChange }: SettingsPageProps) 
     const selected = await selectDirectory();
     if (selected) {
       onSettingsChange({ ...settings, outputDir: selected });
+    }
+  }
+
+  async function handleInstallSelectedModel() {
+    if (selectedModel.installKind !== "autoZip") {
+      setModelMessage(selectedModel.engineNote);
+      await openExternalUrl(selectedModel.downloadUrl);
+      return;
+    }
+
+    try {
+      setInstallingModelId(selectedModel.id);
+      setModelMessage(`正在下载并安装 ${selectedModel.name}，大模型会比较慢，请不要关闭软件。`);
+      const modelDir = await installModel(selectedModel);
+      onSettingsChange({ ...settings, selectedModelId: selectedModel.id, modelDir });
+      setModelMessage(`已安装到 ${modelDir}`);
+    } catch (error) {
+      setModelMessage(error instanceof Error ? error.message : "模型安装失败。");
+    } finally {
+      setInstallingModelId(null);
     }
   }
 
@@ -119,6 +149,7 @@ export function SettingsPage({ settings, onSettingsChange }: SettingsPageProps) 
                 <span>{model.size} · {model.quality}</span>
                 <span>{model.memory}</span>
                 <small>{model.recommendedFor}</small>
+                <em>{model.installKind === "autoZip" ? "可自动安装" : "需后续接入引擎"}</em>
               </button>
             );
           })}
@@ -129,11 +160,17 @@ export function SettingsPage({ settings, onSettingsChange }: SettingsPageProps) 
             <span>当前模型目录</span>
             <strong>{settings.modelDir || "尚未选择"}</strong>
           </div>
-          <button className="primary-button" type="button" onClick={() => void openExternalUrl(selectedModel.downloadUrl)}>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={installingModelId !== null}
+            onClick={() => void handleInstallSelectedModel()}
+          >
             <Download size={17} />
-            下载{selectedModel.name}
+            {selectedModel.installKind === "autoZip" ? `下载并安装${selectedModel.name}` : `查看${selectedModel.name}`}
           </button>
         </div>
+        {modelMessage && <p className="model-message">{modelMessage}</p>}
       </div>
 
       <SettingRow label="输出目录" description="文件转录结果保存位置。留空时保存到源文件旁边。">

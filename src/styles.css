@@ -326,6 +326,11 @@ textarea {
   background: #115e59;
 }
 
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .secondary-button:hover {
   background: #f9fafb;
 }
@@ -542,6 +547,22 @@ textarea {
   line-height: 1.5;
 }
 
+.model-card em {
+  justify-self: start;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: #475467;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.model-card--selected em {
+  background: #ccfbf1;
+  color: #0f766e;
+}
+
 .model-actions {
   padding-top: 4px;
 }
@@ -561,6 +582,15 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-message {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #eef2f6;
+  color: #344054;
+  line-height: 1.5;
 }
 
 .diagnostic-row {
