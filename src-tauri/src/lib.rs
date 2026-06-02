@@ -2,7 +2,7 @@ mod app_state;
 mod config;
 
 use app_state::AppSnapshot;
-use config::UserSettings;
+use config::{HotwordRule, UserSettings};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -190,6 +190,8 @@ struct TranscribeFileRequest {
     performance_mode: String,
     #[serde(default = "default_acceleration_mode")]
     acceleration_mode: String,
+    #[serde(default)]
+    hotwords: Vec<HotwordRule>,
     #[serde(default = "default_export_format")]
     output_format: String,
     #[serde(default = "default_save_output")]
@@ -210,6 +212,20 @@ fn default_performance_mode() -> String {
 
 fn default_acceleration_mode() -> String {
     "cpu".to_string()
+}
+
+fn apply_hotwords(text: &str, hotwords: &[HotwordRule]) -> String {
+    let mut rules = hotwords
+        .iter()
+        .filter(|rule| rule.enabled && !rule.source.trim().is_empty())
+        .collect::<Vec<_>>();
+    rules.sort_by(|left, right| right.source.chars().count().cmp(&left.source.chars().count()));
+
+    let mut next = text.to_string();
+    for rule in rules {
+        next = next.replace(rule.source.trim(), rule.target.as_str());
+    }
+    next
 }
 
 fn transcription_performance(mode: &str) -> TranscriptionPerformance {
@@ -2862,7 +2878,7 @@ fn transcribe_file_with_sherpa(
         started_at,
         &runtime.mode,
     );
-    let text = match text_result {
+    let raw_text = match text_result {
         Ok(text) => text,
         Err(error) if runtime.mode != "cpu" => {
             trip_cuda_circuit(&app, format!("CUDA 识别失败：{error}"));
@@ -2889,6 +2905,7 @@ fn transcribe_file_with_sherpa(
         }
         Err(error) => return Err(error),
     };
+    let text = apply_hotwords(&raw_text, &request.hotwords);
 
     if text.is_empty() {
         return Err("Sherpa 已运行，但没有解析到转录文字。".to_string());
@@ -3192,6 +3209,7 @@ fn finish_recording_with_settings(
             task_id: None,
             performance_mode: "stable".to_string(),
             acceleration_mode: settings.acceleration_mode,
+            hotwords: settings.hotwords,
             output_format: settings.export_format,
             save_output: settings.save_recordings,
         },
@@ -3698,6 +3716,36 @@ mod tests {
             serde_json::from_str(r#"{"shortcut":"Mouse4"}"#).expect("settings");
 
         assert_eq!(settings.acceleration_mode, "cpu");
+        assert!(settings.hotwords.is_empty());
+    }
+
+    #[test]
+    fn applies_enabled_hotword_replacements_longest_first() {
+        let rules = vec![
+            HotwordRule {
+                id: "short".to_string(),
+                source: "陶瑞".to_string(),
+                target: "Tauri".to_string(),
+                enabled: true,
+            },
+            HotwordRule {
+                id: "long".to_string(),
+                source: "陶瑞应用".to_string(),
+                target: "Tauri 应用".to_string(),
+                enabled: true,
+            },
+            HotwordRule {
+                id: "disabled".to_string(),
+                source: "不会替换".to_string(),
+                target: "SHOULD_NOT_APPEAR".to_string(),
+                enabled: false,
+            },
+        ];
+
+        assert_eq!(
+            apply_hotwords("陶瑞应用，不会替换。", &rules),
+            "Tauri 应用，不会替换。"
+        );
     }
 
     #[test]
@@ -3707,6 +3755,7 @@ mod tests {
                 .expect("request");
 
         assert_eq!(request.acceleration_mode, "cpu");
+        assert!(request.hotwords.is_empty());
     }
 
     #[test]

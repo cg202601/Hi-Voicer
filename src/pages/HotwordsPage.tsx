@@ -3,8 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { saveTextFile } from "../lib/api";
 import type { HotwordRule } from "../types";
 
-const HOTWORDS_STORAGE_KEY = "hi-voicer-hotwords";
-
 function createRule(): HotwordRule {
   return {
     id: `rule-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -47,35 +45,35 @@ function readHotwordFileText(file: File): Promise<string> {
   });
 }
 
-export function HotwordsPage({ rules }: { rules: HotwordRule[] }) {
+export function HotwordsPage({
+  rules,
+  onRulesChange,
+}: {
+  rules: HotwordRule[];
+  onRulesChange?: (rules: HotwordRule[]) => void;
+}) {
   const [items, setItems] = useState<HotwordRule[]>(rules);
   const [message, setMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(HOTWORDS_STORAGE_KEY);
-    if (raw) {
-      try {
-        const imported = normalizeImportedRules(JSON.parse(raw));
-        if (imported.length > 0) {
-          setItems(imported);
-        }
-      } catch {
-        window.localStorage.removeItem(HOTWORDS_STORAGE_KEY);
-      }
-    }
-  }, []);
+    setItems(rules);
+  }, [rules]);
 
-  useEffect(() => {
-    window.localStorage.setItem(HOTWORDS_STORAGE_KEY, JSON.stringify(items));
-  }, [items]);
+  function setRules(next: HotwordRule[] | ((current: HotwordRule[]) => HotwordRule[])) {
+    setItems((current) => {
+      const updated = typeof next === "function" ? next(current) : next;
+      onRulesChange?.(updated);
+      return updated;
+    });
+  }
 
   function updateRule(id: string, patch: Partial<HotwordRule>) {
-    setItems((current) => current.map((rule) => (rule.id === id ? { ...rule, ...patch } : rule)));
+    setRules((current) => current.map((rule) => (rule.id === id ? { ...rule, ...patch } : rule)));
   }
 
   function handleAddRule() {
-    setItems((current) => [createRule(), ...current]);
+    setRules((current) => [createRule(), ...current]);
     setMessage("已新增一条规则。");
   }
 
@@ -96,7 +94,7 @@ export function HotwordsPage({ rules }: { rules: HotwordRule[] }) {
 
     try {
       const imported = normalizeImportedRules(JSON.parse(await readHotwordFileText(file)));
-      setItems(imported);
+      setRules(imported);
       setMessage(`已导入 ${imported.length} 条规则。`);
     } catch {
       setMessage("导入失败，请选择 JSON 配置文件。");
@@ -161,7 +159,7 @@ export function HotwordsPage({ rules }: { rules: HotwordRule[] }) {
               aria-label="删除规则"
               className="icon-button"
               type="button"
-              onClick={() => setItems((current) => current.filter((item) => item.id !== rule.id))}
+              onClick={() => setRules((current) => current.filter((item) => item.id !== rule.id))}
             >
               <Trash2 size={16} />
             </button>

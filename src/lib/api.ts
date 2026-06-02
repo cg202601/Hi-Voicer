@@ -279,6 +279,7 @@ export async function transcribeFile(
       taskId: options.taskId,
       performanceMode: options.performanceMode ?? "balanced",
       accelerationMode: settings.accelerationMode ?? "cpu",
+      hotwords: settings.hotwords ?? [],
     },
   });
 }

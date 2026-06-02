@@ -58,6 +58,7 @@ export interface UserSettings {
   pasteMode: PasteMode;
   recordingMode: RecordingMode;
   accelerationMode: AccelerationMode;
+  hotwords: HotwordRule[];
   theme: ThemeMode;
   saveRecordings: boolean;
   launchAtStartup: boolean;

@@ -32,15 +32,18 @@ describe("HotwordsPage", () => {
   });
 
   it("adds an editable rule", () => {
-    render(<HotwordsPage rules={[]} />);
+    const onRulesChange = vi.fn();
+    render(<HotwordsPage rules={[]} onRulesChange={onRulesChange} />);
 
     fireEvent.click(screen.getAllByRole("button")[2]);
 
     expect(screen.getAllByRole("textbox")).toHaveLength(2);
+    expect(onRulesChange).toHaveBeenCalledWith([expect.objectContaining({ enabled: true })]);
   });
 
   it("imports rules from json", async () => {
-    render(<HotwordsPage rules={[]} />);
+    const onRulesChange = vi.fn();
+    render(<HotwordsPage rules={[]} onRulesChange={onRulesChange} />);
 
     const file = new File([JSON.stringify({ rules: [{ source: "tauri_term", target: "Tauri", enabled: true }] })], "rules.json", {
       type: "application/json",
@@ -50,6 +53,9 @@ describe("HotwordsPage", () => {
 
     expect(await screen.findByDisplayValue("tauri_term")).toBeTruthy();
     expect(await screen.findByDisplayValue("Tauri")).toBeTruthy();
+    expect(onRulesChange).toHaveBeenCalledWith([
+      expect.objectContaining({ source: "tauri_term", target: "Tauri", enabled: true }),
+    ]);
   });
 
   it("exports current rules as json", async () => {

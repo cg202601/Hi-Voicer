@@ -75,6 +75,7 @@ describe("settings fallback storage", () => {
         audioPath: "C:\\audio\\demo.wav",
         outputFormat: "srt",
         accelerationMode: "cpu",
+        hotwords: initialSettings.hotwords,
         saveOutput: true,
       }),
     });

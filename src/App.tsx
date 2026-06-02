@@ -25,6 +25,7 @@ import { TranscriptionPage } from "./pages/TranscriptionPage";
 import type { AppPage, AppStatus, ModelValidationResult, TranscriptHistoryItem, TranscriptTask, UserSettings } from "./types";
 
 const HISTORY_KEY = "hi-voicer-transcript-history";
+const HOTWORDS_KEY = "hi-voicer-hotwords";
 const MAX_HISTORY_ITEMS = 20;
 
 function loadTranscriptHistory() {
@@ -38,6 +39,45 @@ function loadTranscriptHistory() {
 
 function saveTranscriptHistory(history: TranscriptHistoryItem[]) {
   window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+}
+
+function normalizeHotwords(value: unknown) {
+  const list = Array.isArray(value)
+    ? value
+    : typeof value === "object" && value && Array.isArray((value as { rules?: unknown }).rules)
+      ? (value as { rules: unknown[] }).rules
+      : [];
+
+  return list
+    .map((item, index) => {
+      const rule = item as Partial<(typeof initialHotwords)[number]>;
+      return {
+        id: typeof rule.id === "string" ? rule.id : `hotword-${Date.now()}-${index}`,
+        source: typeof rule.source === "string" ? rule.source : "",
+        target: typeof rule.target === "string" ? rule.target : "",
+        enabled: typeof rule.enabled === "boolean" ? rule.enabled : true,
+      };
+    })
+    .filter((rule) => rule.source.trim() || rule.target.trim());
+}
+
+function loadHotwords() {
+  try {
+    const raw = window.localStorage.getItem(HOTWORDS_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const rules = normalizeHotwords(JSON.parse(raw));
+    return rules.length > 0 ? rules : null;
+  } catch {
+    window.localStorage.removeItem(HOTWORDS_KEY);
+    return null;
+  }
+}
+
+function saveHotwords(rules: UserSettings["hotwords"]) {
+  window.localStorage.setItem(HOTWORDS_KEY, JSON.stringify(rules));
 }
 
 function getInitialWindowLabel() {
@@ -72,8 +112,10 @@ export default function App() {
       return;
     }
     void loadSettings(initialSettings).then((loadedSettings) => {
-      setSettings(loadedSettings);
-      void refreshModelValidation(loadedSettings);
+      const hotwords = loadHotwords();
+      const nextSettings = hotwords ? { ...loadedSettings, hotwords } : loadedSettings;
+      setSettings(nextSettings);
+      void refreshModelValidation(nextSettings);
     });
   }, [windowLabel]);
 
@@ -95,6 +137,11 @@ export default function App() {
       setSettings(savedSettings);
       void refreshModelValidation(savedSettings);
     });
+  }
+
+  function handleHotwordsChange(hotwords: UserSettings["hotwords"]) {
+    saveHotwords(hotwords);
+    handleSettingsChange({ ...settings, hotwords });
   }
 
   function clearTranscriptHistory() {
@@ -327,7 +374,7 @@ export default function App() {
           settings={settings}
         />
       )}
-      {currentPage === "hotwords" && <HotwordsPage rules={initialHotwords} />}
+      {currentPage === "hotwords" && <HotwordsPage rules={settings.hotwords} onRulesChange={handleHotwordsChange} />}
       {currentPage === "settings" && (
         <SettingsPage
           settings={settings}
