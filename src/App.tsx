@@ -107,6 +107,11 @@ export default function App() {
     modelName: "",
     message: "尚未配置离线模型。",
   });
+  const [transcriptionModelValidation, setTranscriptionModelValidation] = useState<ModelValidationResult>({
+    valid: false,
+    modelName: "",
+    message: "No transcription model configured.",
+  });
 
   useEffect(() => {
     if (windowLabel !== "main") {
@@ -131,9 +136,15 @@ export default function App() {
   }, [settings.theme]);
 
   async function refreshModelValidation(nextSettings: UserSettings) {
-    const validation = await validateModelDir(nextSettings.modelDir);
+    const inputModelDir = nextSettings.inputModelDir || nextSettings.modelDir;
+    const transcriptionModelDir = nextSettings.transcriptionModelDir || nextSettings.modelDir;
+    const [validation, nextTranscriptionValidation] = await Promise.all([
+      validateModelDir(inputModelDir),
+      validateModelDir(transcriptionModelDir),
+    ]);
     setModelValidation(validation);
-    if (nextSettings.modelDir && !validation.valid) {
+    setTranscriptionModelValidation(nextTranscriptionValidation);
+    if (inputModelDir && !validation.valid) {
       setLastResult(validation.message);
     }
   }
@@ -354,7 +365,7 @@ export default function App() {
           detail:
             settings.recordingMode === "audioOnly" && !modelValidation.valid
               ? "纯录音模式不需要模型；识别模式仍需配置模型。"
-              : modelValidation.message,
+              : `Input: ${modelValidation.message} / Transcription: ${transcriptionModelValidation.message}`,
         }
       : item,
   );

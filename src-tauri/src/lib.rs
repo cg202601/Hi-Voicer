@@ -27,10 +27,12 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
 
 const SHERPA_DAEMON_PORT: u16 = 6127;
+const SHERPA_WEBSOCKET_DAEMON_ENABLED: bool = false;
 const SHERPA_WEBSOCKET_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
 const DAVINCI_TIMECODE_FPS: u64 = 25;
 const LONG_AUDIO_CHUNK_SECONDS: u32 = 60;
 const LONG_AUDIO_THRESHOLD_SECONDS: f64 = 300.0;
+const LLM_ASR_CHUNK_SECONDS: u32 = 20;
 const MIN_RECORDING_SECONDS: f64 = 0.05;
 const SHERPA_RUNTIME_TAG: &str = "v1.13.2";
 const SHERPA_CPU_RUNTIME_NAME: &str = "sherpa-onnx-v1.13.2-win-x64-static-MT-Release-no-tts";
@@ -1668,6 +1670,23 @@ fn text_from_sherpa_json_value(value: &serde_json::Value) -> Option<String> {
     let text = value.get("text").and_then(|text| text.as_str())?.trim();
     if text.is_empty() {
         None
+    } else if text == "language"
+        && value
+            .get("timestamps")
+            .and_then(|timestamps| timestamps.as_array())
+            .is_some_and(|timestamps| timestamps.is_empty())
+        && value
+            .get("tokens")
+            .and_then(|tokens| tokens.as_array())
+            .is_some_and(|tokens| {
+                tokens.len() == 1
+                    && tokens
+                        .first()
+                        .and_then(|token| token.as_str())
+                        .is_some_and(|token| token == "language")
+            })
+    {
+        None
     } else {
         Some(text.to_string())
     }
@@ -2270,7 +2289,8 @@ fn resolve_sherpa_runtime(
     engine: &InstalledEngineConfig,
     requested_mode: &str,
 ) -> ResolvedSherpaRuntime {
-    let cpu_executable = PathBuf::from(&engine.executable);
+    let cpu_runtime_executable = PathBuf::from(&engine.executable);
+    let cpu_executable = sherpa_cli_executable_for_engine(engine, &cpu_runtime_executable);
     let mode = requested_mode.trim().to_ascii_lowercase();
     if mode != "cuda" {
         return ResolvedSherpaRuntime {
@@ -2301,7 +2321,10 @@ fn resolve_sherpa_runtime(
         };
     }
 
-    let cuda_executable = match sherpa_runtime_executable_path(app, SHERPA_CUDA_RUNTIME_NAME) {
+    let cuda_runtime_executable = match sherpa_runtime_executable_path(
+        app,
+        SHERPA_CUDA_RUNTIME_NAME,
+    ) {
         Ok(executable) if executable.exists() => executable,
         Ok(_) => {
             return ResolvedSherpaRuntime {
@@ -2321,6 +2344,7 @@ fn resolve_sherpa_runtime(
             };
         }
     };
+    let cuda_executable = sherpa_cli_executable_for_engine(engine, &cuda_runtime_executable);
 
     if !is_cuda_runtime_startup_checked(app, &cuda_executable) {
         if let Err(error) = smoke_test_sherpa_runtime(&cuda_executable) {
@@ -2343,8 +2367,53 @@ fn resolve_sherpa_runtime(
     }
 }
 
-fn sherpa_websocket_server_path(executable: &Path) -> PathBuf {
-    executable.with_file_name("sherpa-onnx-offline-websocket-server.exe")
+fn is_sherpa_streaming_cli_model(engine: &InstalledEngineConfig) -> bool {
+    matches!(engine.model_id.as_str(), "sherpa-zipformer-zh")
+}
+
+fn sherpa_max_single_pass_seconds(engine: &InstalledEngineConfig) -> f64 {
+    match engine.model_id.as_str() {
+        "qwen3-asr-0.6b" | "sherpa-funasr-nano" => LLM_ASR_CHUNK_SECONDS as f64,
+        _ => LONG_AUDIO_THRESHOLD_SECONDS,
+    }
+}
+
+fn sherpa_chunk_seconds(engine: &InstalledEngineConfig) -> u32 {
+    match engine.model_id.as_str() {
+        "qwen3-asr-0.6b" | "sherpa-funasr-nano" => LLM_ASR_CHUNK_SECONDS,
+        _ => LONG_AUDIO_CHUNK_SECONDS,
+    }
+}
+
+fn sherpa_cli_executable_for_engine(
+    engine: &InstalledEngineConfig,
+    runtime_executable: &Path,
+) -> PathBuf {
+    if is_sherpa_streaming_cli_model(engine) {
+        runtime_executable.with_file_name(if cfg!(windows) {
+            "sherpa-onnx.exe"
+        } else {
+            "sherpa-onnx"
+        })
+    } else {
+        runtime_executable.to_path_buf()
+    }
+}
+
+fn sherpa_websocket_server_path(engine: &InstalledEngineConfig, executable: &Path) -> PathBuf {
+    if is_sherpa_streaming_cli_model(engine) {
+        executable.with_file_name(if cfg!(windows) {
+            "sherpa-onnx-online-websocket-server.exe"
+        } else {
+            "sherpa-onnx-online-websocket-server"
+        })
+    } else {
+        executable.with_file_name(if cfg!(windows) {
+            "sherpa-onnx-offline-websocket-server.exe"
+        } else {
+            "sherpa-onnx-offline-websocket-server"
+        })
+    }
 }
 
 fn ensure_sherpa_daemon_running(
@@ -2353,7 +2422,7 @@ fn ensure_sherpa_daemon_running(
     executable: &Path,
     runtime_mode: &str,
 ) -> Result<(), String> {
-    let server_exe = sherpa_websocket_server_path(executable);
+    let server_exe = sherpa_websocket_server_path(engine, executable);
     if !server_exe.exists() {
         return Err(
             "Sherpa WebSocket server executable does not exist; fast mode cannot be enabled."
@@ -2404,18 +2473,6 @@ fn ensure_sherpa_daemon_running(
     });
 
     Ok(())
-}
-
-fn warm_sherpa_daemon(app: AppHandle, model_dir: String) {
-    if model_dir.trim().is_empty() {
-        return;
-    }
-
-    let model_dir = PathBuf::from(model_dir);
-    if let Ok(engine) = read_sherpa_engine(&model_dir) {
-        let executable = PathBuf::from(&engine.executable);
-        let _ = ensure_sherpa_daemon_running(&app, &engine, &executable, "cpu");
-    }
 }
 
 fn wav_to_sherpa_websocket_payload(wav_path: &Path) -> Result<Vec<u8>, String> {
@@ -2704,6 +2761,7 @@ fn split_wav_into_chunks_in_dir(
 fn split_wav_into_chunks(
     app: &AppHandle,
     wav_path: &Path,
+    chunk_seconds: u32,
 ) -> Result<(Vec<AudioChunk>, PathBuf), String> {
     let chunk_dir = app
         .path()
@@ -2711,7 +2769,7 @@ fn split_wav_into_chunks(
         .map_err(|error| error.to_string())?
         .join("chunks")
         .join(format!("audio-{}", unix_timestamp_millis()?));
-    let chunks = split_wav_into_chunks_in_dir(wav_path, &chunk_dir, LONG_AUDIO_CHUNK_SECONDS)?;
+    let chunks = split_wav_into_chunks_in_dir(wav_path, &chunk_dir, chunk_seconds)?;
     Ok((chunks, chunk_dir))
 }
 
@@ -3026,7 +3084,7 @@ fn transcribe_sherpa_wav_once(
     allow_daemon: bool,
     runtime_mode: &str,
 ) -> Result<String, String> {
-    if allow_daemon {
+    if allow_daemon && SHERPA_WEBSOCKET_DAEMON_ENABLED {
         match ensure_sherpa_daemon_running(app, engine, executable, runtime_mode)
             .and_then(|_| transcribe_sherpa_wav_websocket(wav_path))
         {
@@ -3055,7 +3113,8 @@ fn transcribe_sherpa_wav(
     runtime_mode: &str,
 ) -> Result<Vec<TranscriptTextChunk>, String> {
     let duration = wav_duration_seconds(wav_path)?;
-    if duration <= LONG_AUDIO_THRESHOLD_SECONDS {
+    let max_single_pass_seconds = sherpa_max_single_pass_seconds(engine);
+    if duration <= max_single_pass_seconds {
         emit_transcription_progress(
             app,
             task_id,
@@ -3072,7 +3131,7 @@ fn transcribe_sherpa_wav(
             executable,
             wav_path,
             performance,
-            true,
+            false,
             runtime_mode,
         )?;
         emit_transcription_progress(
@@ -3092,7 +3151,8 @@ fn transcribe_sherpa_wav(
         }]);
     }
 
-    let (chunks, chunk_dir) = split_wav_into_chunks(app, wav_path)?;
+    let chunk_seconds = sherpa_chunk_seconds(engine);
+    let (chunks, chunk_dir) = split_wav_into_chunks(app, wav_path, chunk_seconds)?;
     let total_segments = chunks.len();
     emit_transcription_progress(
         app,
@@ -3245,6 +3305,7 @@ fn run_acceleration_smoke_test_inner(
             "Sherpa-ONNX executable does not exist. Configure the model again.".to_string(),
         );
     }
+    let cpu_cli_executable = sherpa_cli_executable_for_engine(&engine, &cpu_executable);
 
     let smoke_dir = app
         .path()
@@ -3284,7 +3345,7 @@ fn run_acceleration_smoke_test_inner(
             let cpu_text = transcribe_sherpa_wav_once(
                 &app,
                 &engine,
-                &cpu_executable,
+                &cpu_cli_executable,
                 &smoke_wav,
                 performance,
                 false,
@@ -3433,6 +3494,7 @@ fn transcribe_file_with_sherpa(
             "Sherpa-ONNX executable does not exist. Configure the model again.".to_string(),
         );
     }
+    let cpu_cli_executable = sherpa_cli_executable_for_engine(&engine, &cpu_executable);
 
     if request
         .acceleration_mode
@@ -3493,7 +3555,7 @@ fn transcribe_file_with_sherpa(
             transcribe_sherpa_wav(
                 &app,
                 &engine,
-                &cpu_executable,
+                &cpu_cli_executable,
                 &sherpa_audio_path,
                 performance,
                 request.task_id.as_deref(),
@@ -4118,7 +4180,13 @@ fn finish_recording_with_settings(
         });
     }
 
-    if settings.model_dir.trim().is_empty() {
+    let model_dir = if settings.input_model_dir.trim().is_empty() {
+        settings.model_dir.clone()
+    } else {
+        settings.input_model_dir.clone()
+    };
+
+    if model_dir.trim().is_empty() {
         return Err("Download and configure an offline model in Settings first.".to_string());
     }
 
@@ -4126,7 +4194,7 @@ fn finish_recording_with_settings(
         app,
         TranscribeFileRequest {
             audio_path: audio_path.to_string_lossy().to_string(),
-            model_dir: settings.model_dir,
+            model_dir,
             task_id: None,
             performance_mode: "stable".to_string(),
             acceleration_mode: settings.acceleration_mode,
@@ -4293,9 +4361,6 @@ fn load_settings(app: AppHandle, state: State<'_, RuntimeState>) -> Result<UserS
     register_global_recording_shortcut(&app, &settings.shortcut)?;
     let mut stored = state.settings.lock().expect("settings mutex poisoned");
     *stored = settings.clone();
-    let app_handle = app.clone();
-    let model_dir = settings.model_dir.clone();
-    thread::spawn(move || warm_sherpa_daemon(app_handle, model_dir));
     Ok(settings)
 }
 
@@ -4312,9 +4377,6 @@ fn save_settings(
     register_global_recording_shortcut(&app, &settings.shortcut)?;
     let mut stored = state.settings.lock().expect("settings mutex poisoned");
     *stored = settings.clone();
-    let app_handle = app.clone();
-    let model_dir = settings.model_dir.clone();
-    thread::spawn(move || warm_sherpa_daemon(app_handle, model_dir));
     Ok(settings)
 }
 
@@ -5453,7 +5515,10 @@ fn audio_filter_chain(options: &AudioProcessingOptions) -> String {
     let mut filters = Vec::new();
 
     if options.trim_silence {
-        filters.push("silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.2:stop_periods=1:stop_threshold=-45dB:stop_silence=0.3");
+        filters.push("silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.2");
+        filters.push("areverse");
+        filters.push("silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.3");
+        filters.push("areverse");
     }
     if options.voice_filter {
         filters.push("highpass=f=80");
@@ -5624,9 +5689,6 @@ pub fn run() {
             apply_wave_window_visibility(&app.handle(), false);
             setup_tray(app)?;
             register_global_recording_shortcut(&app.handle(), &settings.shortcut)?;
-            let app_handle = app.handle().clone();
-            let model_dir = settings.model_dir.clone();
-            thread::spawn(move || warm_sherpa_daemon(app_handle, model_dir));
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -6034,6 +6096,15 @@ mod tests {
 
     #[test]
     fn websocket_server_path_is_derived_from_selected_runtime() {
+        let engine = InstalledEngineConfig {
+            engine: "sherpa-onnx".to_string(),
+            model_id: "sensevoice-small".to_string(),
+            model_name: "sensevoice-small".to_string(),
+            model_dir: String::new(),
+            executable: String::new(),
+            args: String::new(),
+            required_files: Vec::new(),
+        };
         let cpu_executable = PathBuf::from(
             r"C:\HiVoicer\runtimes\sherpa-onnx-v1.13.2-win-x64-static-MT-Release-no-tts\bin\sherpa-onnx-offline.exe",
         );
@@ -6041,12 +6112,76 @@ mod tests {
             r"C:\HiVoicer\runtimes\sherpa-onnx-v1.13.2-cuda-12.x-cudnn-9.x-win-x64-cuda\bin\sherpa-onnx-offline.exe",
         );
 
-        let cpu_server = sherpa_websocket_server_path(&cpu_executable);
-        let cuda_server = sherpa_websocket_server_path(&cuda_executable);
+        let cpu_server = sherpa_websocket_server_path(&engine, &cpu_executable);
+        let cuda_server = sherpa_websocket_server_path(&engine, &cuda_executable);
 
         assert_ne!(cpu_server, cuda_server);
         assert!(cpu_server.to_string_lossy().contains("static-MT"));
         assert!(cuda_server.to_string_lossy().contains("cuda-12.x"));
+        assert!(cpu_server
+            .to_string_lossy()
+            .contains("sherpa-onnx-offline-websocket-server.exe"));
+    }
+
+    #[test]
+    fn zipformer_uses_streaming_sherpa_cli_and_server() {
+        let engine = InstalledEngineConfig {
+            engine: "sherpa-onnx".to_string(),
+            model_id: "sherpa-zipformer-zh".to_string(),
+            model_name: "Sherpa Zipformer".to_string(),
+            model_dir: String::new(),
+            executable: String::new(),
+            args: String::new(),
+            required_files: Vec::new(),
+        };
+        let offline_executable = PathBuf::from(
+            r"C:\HiVoicer\runtimes\sherpa-onnx-v1.13.2-win-x64-static-MT-Release-no-tts\bin\sherpa-onnx-offline.exe",
+        );
+
+        let cli_executable = sherpa_cli_executable_for_engine(&engine, &offline_executable);
+        let server_executable = sherpa_websocket_server_path(&engine, &cli_executable);
+
+        assert!(cli_executable
+            .to_string_lossy()
+            .ends_with("sherpa-onnx.exe"));
+        assert!(server_executable
+            .to_string_lossy()
+            .ends_with("sherpa-onnx-online-websocket-server.exe"));
+    }
+
+    #[test]
+    fn llm_asr_models_use_short_chunks() {
+        let qwen = InstalledEngineConfig {
+            engine: "sherpa-onnx".to_string(),
+            model_id: "qwen3-asr-0.6b".to_string(),
+            model_name: "Qwen3-ASR 0.6B".to_string(),
+            model_dir: String::new(),
+            executable: String::new(),
+            args: String::new(),
+            required_files: Vec::new(),
+        };
+        let funasr = InstalledEngineConfig {
+            model_id: "sherpa-funasr-nano".to_string(),
+            model_name: "Sherpa FunASR-Nano".to_string(),
+            ..qwen.clone()
+        };
+        let paraformer = InstalledEngineConfig {
+            model_id: "sherpa-paraformer-zh".to_string(),
+            model_name: "Sherpa Paraformer".to_string(),
+            ..qwen.clone()
+        };
+
+        assert_eq!(sherpa_chunk_seconds(&qwen), LLM_ASR_CHUNK_SECONDS);
+        assert_eq!(sherpa_chunk_seconds(&funasr), LLM_ASR_CHUNK_SECONDS);
+        assert_eq!(
+            sherpa_max_single_pass_seconds(&qwen),
+            LLM_ASR_CHUNK_SECONDS as f64
+        );
+        assert_eq!(sherpa_chunk_seconds(&paraformer), LONG_AUDIO_CHUNK_SECONDS);
+        assert_eq!(
+            sherpa_max_single_pass_seconds(&paraformer),
+            LONG_AUDIO_THRESHOLD_SECONDS
+        );
     }
 
     #[test]
@@ -6187,6 +6322,13 @@ Elapsed seconds: 0.16
     #[test]
     fn ignores_empty_text_json_with_metadata() {
         let output = r#"{"language":"zh","text":"","timestamps":[],"durations":[],"tokens":[],"ys_log_probs":[],"words":[]}"#;
+
+        assert_eq!(extract_transcription_text(output), "");
+    }
+
+    #[test]
+    fn ignores_qwen_language_placeholder_result() {
+        let output = r#"{"lang":"","emotion":"","event":"","text":"language","timestamps":[],"durations":[],"tokens":["language"],"ys_log_probs":[],"words":[]}"#;
 
         assert_eq!(extract_transcription_text(output), "");
     }
@@ -6568,6 +6710,21 @@ Elapsed seconds: 0.16
             "trim-silence"
         );
         assert!(audio_processing_preset_slug("../bad").is_err());
+    }
+
+    #[test]
+    fn trim_silence_filter_does_not_stop_at_first_internal_pause() {
+        let filter = audio_filter_chain(&AudioProcessingOptions {
+            preset: "voiceBasic".to_string(),
+            normalize: true,
+            trim_silence: true,
+            hum_reduction: false,
+            voice_filter: true,
+            noise_reduction: true,
+        });
+
+        assert!(!filter.contains("stop_periods=1"));
+        assert!(filter.contains("areverse,silenceremove=start_periods=1"));
     }
 
     #[test]

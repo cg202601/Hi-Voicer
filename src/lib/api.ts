@@ -46,12 +46,25 @@ function arrayValue<T>(value: unknown, fallback: T[]): T[] {
 
 function normalizeSettings(defaultSettings: UserSettings, value: unknown): UserSettings {
   const settings = value && typeof value === "object" ? (value as Partial<UserSettings>) : {};
+  const selectedModelId = stringValue(settings.selectedModelId, defaultSettings.selectedModelId);
+  const modelDir = stringValue(settings.modelDir, defaultSettings.modelDir);
+  const inputModelId = stringValue(settings.inputModelId, selectedModelId || defaultSettings.inputModelId);
+  const inputModelDir = stringValue(settings.inputModelDir, modelDir || defaultSettings.inputModelDir);
+  const transcriptionModelId = stringValue(
+    settings.transcriptionModelId,
+    settings.inputModelId ? defaultSettings.transcriptionModelId : selectedModelId || defaultSettings.transcriptionModelId,
+  );
+  const transcriptionModelDir = stringValue(settings.transcriptionModelDir, modelDir || defaultSettings.transcriptionModelDir);
   return {
     ...defaultSettings,
     ...settings,
     shortcut: stringValue(settings.shortcut, defaultSettings.shortcut),
-    selectedModelId: stringValue(settings.selectedModelId, defaultSettings.selectedModelId),
-    modelDir: stringValue(settings.modelDir, defaultSettings.modelDir),
+    selectedModelId,
+    modelDir,
+    inputModelId,
+    inputModelDir,
+    transcriptionModelId,
+    transcriptionModelDir,
     outputDir: stringValue(settings.outputDir, defaultSettings.outputDir),
     pasteMode: enumValue(settings.pasteMode, pasteModes, defaultSettings.pasteMode),
     recordingMode: enumValue(settings.recordingMode, recordingModes, defaultSettings.recordingMode),
@@ -353,13 +366,14 @@ export async function prepareAccelerationRuntime(accelerationMode: UserSettings[
 }
 
 export async function runAccelerationSmokeTest(settings: UserSettings): Promise<AccelerationSmokeTestResult> {
-  if (!settings.modelDir) {
+  const modelDir = settings.transcriptionModelDir || settings.modelDir;
+  if (!modelDir) {
     throw new Error("请先配置离线模型。");
   }
 
   return await invoke<AccelerationSmokeTestResult>("run_acceleration_smoke_test", {
     request: {
-      modelDir: settings.modelDir,
+      modelDir,
       accelerationMode: settings.accelerationMode ?? "cpu",
     },
   });
@@ -389,14 +403,15 @@ export async function transcribeFile(
   settings: UserSettings,
   options: { saveOutput?: boolean; outputFormat?: string; taskId?: string; performanceMode?: TranscriptionPerformanceMode } = {},
 ): Promise<TranscribeFileResult> {
-  if (!settings.modelDir) {
+  const modelDir = settings.transcriptionModelDir || settings.modelDir;
+  if (!modelDir) {
     throw new Error("请先在设置里下载并配置离线模型。");
   }
 
   return await invoke<TranscribeFileResult>("transcribe_file", {
     request: {
       audioPath,
-      modelDir: settings.modelDir,
+      modelDir,
       outputFormat: options.outputFormat ?? "plainText",
       saveOutput: options.saveOutput ?? true,
       taskId: options.taskId,

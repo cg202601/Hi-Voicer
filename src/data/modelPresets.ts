@@ -150,7 +150,7 @@ export const modelPresets: ModelPreset[] = [
       { path: "tokens.txt", url: hf("k2-fsa/sherpa-onnx-streaming-zipformer-multi-zh-hans-2023-12-12", "tokens.txt") },
     ],
     sherpaArgs:
-      '--encoder="{modelDir}\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx" --decoder="{modelDir}\\decoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx" --joiner="{modelDir}\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx" --tokens="{modelDir}\\tokens.txt" --num-threads=4 --decoding-method=greedy_search --model-type=transducer',
+      '--encoder="{modelDir}\\encoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx" --decoder="{modelDir}\\decoder-epoch-20-avg-1-chunk-16-left-128.int8.onnx" --joiner="{modelDir}\\joiner-epoch-20-avg-1-chunk-16-left-128.int8.onnx" --tokens="{modelDir}\\tokens.txt" --num-threads=4 --decoding-method=greedy_search --model-type=zipformer',
   },
   {
     id: "qwen3-asr-1.7b",

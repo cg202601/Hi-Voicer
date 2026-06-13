@@ -7,6 +7,10 @@ pub struct UserSettings {
     pub shortcut: String,
     pub selected_model_id: String,
     pub model_dir: String,
+    pub input_model_id: String,
+    pub input_model_dir: String,
+    pub transcription_model_id: String,
+    pub transcription_model_dir: String,
     pub output_dir: String,
     pub paste_mode: String,
     pub recording_mode: String,
@@ -73,6 +77,10 @@ impl Default for UserSettings {
             shortcut: "CapsLock".to_string(),
             selected_model_id: "sensevoice-small".to_string(),
             model_dir: String::new(),
+            input_model_id: "sensevoice-small".to_string(),
+            input_model_dir: String::new(),
+            transcription_model_id: "qwen3-asr-0.6b".to_string(),
+            transcription_model_dir: String::new(),
             output_dir: String::new(),
             paste_mode: "clipboard".to_string(),
             recording_mode: "hold".to_string(),
@@ -124,6 +132,22 @@ impl UserSettings {
         }
         if self.selected_model_id.trim().is_empty() {
             self.selected_model_id = defaults.selected_model_id;
+        }
+        if self.input_model_id.trim().is_empty() {
+            self.input_model_id = self.selected_model_id.clone();
+        }
+        if self.transcription_model_id.trim().is_empty() {
+            self.transcription_model_id = if self.input_model_id == self.selected_model_id {
+                self.selected_model_id.clone()
+            } else {
+                defaults.transcription_model_id
+            };
+        }
+        if self.input_model_dir.trim().is_empty() && !self.model_dir.trim().is_empty() {
+            self.input_model_dir = self.model_dir.clone();
+        }
+        if self.transcription_model_dir.trim().is_empty() && !self.model_dir.trim().is_empty() {
+            self.transcription_model_dir = self.model_dir.clone();
         }
         if !matches!(self.paste_mode.as_str(), "direct" | "clipboard") {
             self.paste_mode = defaults.paste_mode;

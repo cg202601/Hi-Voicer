@@ -48,6 +48,19 @@ describe("SettingsPage", () => {
     );
   });
 
+  it("selects a separate transcription model", () => {
+    const onSettingsChange = renderSettings();
+
+    fireEvent.click(screen.getByRole("group", { name: "模型用途" }).querySelectorAll("button")[1]);
+    fireEvent.click(screen.getByRole("button", { name: /Sherpa FunASR-Nano/ }));
+
+    expect(onSettingsChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transcriptionModelId: "sherpa-funasr-nano",
+      }),
+    );
+  });
+
   it("selects dark theme", () => {
     const onSettingsChange = renderSettings();
 

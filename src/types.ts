@@ -72,6 +72,10 @@ export interface UserSettings {
   shortcut: string;
   selectedModelId: string;
   modelDir: string;
+  inputModelId: string;
+  inputModelDir: string;
+  transcriptionModelId: string;
+  transcriptionModelDir: string;
   outputDir: string;
   pasteMode: PasteMode;
   recordingMode: RecordingMode;

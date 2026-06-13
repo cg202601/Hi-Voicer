@@ -6,6 +6,8 @@ import { modelPresets } from "../data/modelPresets";
 import { installModel, listenModelInstallProgress, openExternalUrl, selectDirectory } from "../lib/api";
 import type { ThemeMode, UserSettings } from "../types";
 
+type ModelRole = "input" | "transcription";
+
 interface SettingsPageProps {
   settings: UserSettings;
   onOpenRecordingsFolder: () => void;
@@ -52,8 +54,17 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
   const [isCapturingShortcut, setIsCapturingShortcut] = useState(false);
   const [modelMessage, setModelMessage] = useState("");
   const [installingModelId, setInstallingModelId] = useState<string | null>(null);
+  const [activeModelRole, setActiveModelRole] = useState<ModelRole>("input");
   const shortcutButtonRef = useRef<HTMLButtonElement>(null);
-  const selectedModel = modelPresets.find((model) => model.id === settings.selectedModelId) ?? modelPresets[0];
+  const activeModelId =
+    activeModelRole === "input"
+      ? settings.inputModelId || settings.selectedModelId
+      : settings.transcriptionModelId || settings.selectedModelId;
+  const activeModelDir =
+    activeModelRole === "input"
+      ? settings.inputModelDir || settings.modelDir
+      : settings.transcriptionModelDir || settings.modelDir;
+  const selectedModel = modelPresets.find((model) => model.id === activeModelId) ?? modelPresets[0];
 
   useEffect(() => {
     let disposed = false;
@@ -81,7 +92,11 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
       setModelMessage("");
       const selected = await selectDirectory();
       if (selected) {
-        onSettingsChange({ ...settings, modelDir: selected });
+        onSettingsChange(
+          activeModelRole === "input"
+            ? { ...settings, modelDir: selected, inputModelDir: selected }
+            : { ...settings, modelDir: selected, transcriptionModelDir: selected },
+        );
         setModelMessage("模型目录已保存。");
       } else {
         setModelMessage("没有选择目录。");
@@ -102,7 +117,23 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
       setInstallingModelId(selectedModel.id);
       setModelMessage(`正在下载并配置 ${selectedModel.name}，首次安装会比较慢，请不要关闭软件。`);
       const modelDir = await installModel(selectedModel);
-      onSettingsChange({ ...settings, selectedModelId: selectedModel.id, modelDir });
+      onSettingsChange(
+        activeModelRole === "input"
+          ? {
+              ...settings,
+              selectedModelId: selectedModel.id,
+              modelDir,
+              inputModelId: selectedModel.id,
+              inputModelDir: modelDir,
+            }
+          : {
+              ...settings,
+              selectedModelId: selectedModel.id,
+              modelDir,
+              transcriptionModelId: selectedModel.id,
+              transcriptionModelDir: modelDir,
+            },
+      );
       setModelMessage(`已安装到 ${modelDir}`);
     } catch (error) {
       setModelMessage(error instanceof Error ? error.message : "模型安装失败。");
@@ -113,6 +144,27 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
 
   function updateTheme(theme: ThemeMode) {
     onSettingsChange({ ...settings, theme });
+  }
+
+  function selectModelForActiveRole(modelId: string) {
+    onSettingsChange(
+      activeModelRole === "input"
+        ? { ...settings, selectedModelId: modelId, inputModelId: modelId }
+        : { ...settings, selectedModelId: modelId, transcriptionModelId: modelId },
+    );
+  }
+
+  function syncSelectedModelToBoth() {
+    onSettingsChange({
+      ...settings,
+      selectedModelId: selectedModel.id,
+      modelDir: activeModelDir,
+      inputModelId: selectedModel.id,
+      inputModelDir: activeModelDir,
+      transcriptionModelId: selectedModel.id,
+      transcriptionModelDir: activeModelDir,
+    });
+    setModelMessage("已同步到语音输入和文件转录。");
   }
 
   return (
@@ -227,6 +279,29 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
           </button>
         </div>
 
+        <div className="segmented-control" role="group" aria-label="模型用途">
+          <button
+            className={activeModelRole === "input" ? "segment-button segment-button--active" : "segment-button"}
+            type="button"
+            onClick={() => setActiveModelRole("input")}
+          >
+            <Mic size={16} />
+            语音输入
+          </button>
+          <button
+            className={activeModelRole === "transcription" ? "segment-button segment-button--active" : "segment-button"}
+            type="button"
+            onClick={() => setActiveModelRole("transcription")}
+          >
+            <Volume2 size={16} />
+            文件转录
+          </button>
+          <button className="segment-button" type="button" onClick={syncSelectedModelToBoth}>
+            <Check size={16} />
+            同步到两处
+          </button>
+        </div>
+
         <div className="model-grid">
           {modelPresets.map((model) => {
             const isSelected = model.id === selectedModel.id;
@@ -236,7 +311,7 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
                 className={`model-card ${isSelected ? "model-card--selected" : ""}`}
                 key={model.id}
                 type="button"
-                onClick={() => onSettingsChange({ ...settings, selectedModelId: model.id })}
+                onClick={() => selectModelForActiveRole(model.id)}
               >
                 <span className="model-card__title">
                   {model.name}
@@ -268,6 +343,9 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
             {selectedModel.installKind === "sherpaOnnx" ? `下载并配置 ${selectedModel.name}` : `查看 ${selectedModel.name}`}
           </button>
         </div>
+        <p className="model-message">
+          当前用途：{activeModelRole === "input" ? "语音输入" : "文件转录"} / 目录：{activeModelDir || "未选择"}
+        </p>
         {modelMessage && <p className="model-message">{modelMessage}</p>}
       </div>
 

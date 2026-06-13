@@ -121,11 +121,12 @@ describe("settings fallback storage", () => {
   it("sends the selected export format to file transcription", async () => {
     mockedInvoke.mockResolvedValue({ text: "ok", outputPath: "demo.txt", outputPaths: ["demo.txt", "demo.srt"], outputFiles: [] });
 
-    await transcribeFile("C:\\audio\\demo.wav", { ...initialSettings, modelDir: "C:\\models\\demo" }, { outputFormat: "srt" });
+    await transcribeFile("C:\\audio\\demo.wav", { ...initialSettings, transcriptionModelDir: "C:\\models\\demo" }, { outputFormat: "srt" });
 
     expect(mockedInvoke).toHaveBeenCalledWith("transcribe_file", {
       request: expect.objectContaining({
         audioPath: "C:\\audio\\demo.wav",
+        modelDir: "C:\\models\\demo",
         outputFormat: "srt",
         accelerationMode: "cpu",
         hotwords: initialSettings.hotwords,

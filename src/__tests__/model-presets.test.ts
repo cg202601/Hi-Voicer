@@ -43,6 +43,7 @@ describe("model presets", () => {
         "tokens.txt",
       ]),
     );
+    expect(zipformer?.sherpaArgs).toContain("--model-type=zipformer");
   });
 
   it("keeps Qwen3-ASR 1.7B visible without pretending raw weights are ready", () => {
