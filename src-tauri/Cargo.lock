@@ -1839,7 +1839,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-shell",
- "windows 0.54.0",
+ "windows 0.61.3",
  "zip",
 ]
 
