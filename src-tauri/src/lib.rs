@@ -334,17 +334,9 @@ fn transcription_performance(mode: &str) -> TranscriptionPerformance {
 
 fn performance_for_acceleration(
     performance: TranscriptionPerformance,
-    acceleration_mode: &str,
+    _acceleration_mode: &str,
 ) -> TranscriptionPerformance {
-    if acceleration_mode != "cuda" {
-        return performance;
-    }
-
-    TranscriptionPerformance {
-        file_workers: 1,
-        chunk_workers: 1,
-        sherpa_threads: performance.sherpa_threads.min(2).max(1),
-    }
+    performance
 }
 
 #[derive(Debug, Deserialize)]
@@ -1708,15 +1700,11 @@ fn set_sherpa_arg_value(
 fn sherpa_args_for_runtime(
     args: &str,
     threads: Option<usize>,
-    runtime_mode: &str,
+    _runtime_mode: &str,
 ) -> Result<Vec<String>, String> {
     let mut parsed = split_command_args(args)?;
     if let Some(threads) = threads {
         set_sherpa_arg_value(&mut parsed, "--num-threads", &threads.to_string(), true);
-    }
-
-    if runtime_mode.eq_ignore_ascii_case("cuda") {
-        set_sherpa_arg_value(&mut parsed, "--provider", "cuda", true);
     }
 
     Ok(parsed)
@@ -2388,35 +2376,20 @@ fn acceleration_status_from_parts(
 
 fn acceleration_status_for_app(
     app: &AppHandle,
-    requested_mode: &str,
+    _requested_mode: &str,
 ) -> Result<AccelerationStatus, String> {
-    let selected_mode = if requested_mode.trim().eq_ignore_ascii_case("cuda") {
-        "cuda"
-    } else {
-        "cpu"
-    };
-    let cuda_info = query_nvidia_cuda_info();
     let cpu_runtime_installed =
         sherpa_runtime_executable_path(app, SHERPA_CPU_RUNTIME_NAME)?.exists();
-    let cuda_runtime_executable = find_sherpa_runtime_executable(app, SHERPA_CUDA_RUNTIME_NAME)?;
-    let cuda_runtime_installed = cuda_runtime_executable.is_some();
-    let prepare_error = if selected_mode == "cuda" {
-        cuda_runtime_executable
-            .as_deref()
-            .and_then(|executable| cuda_dependency_status(executable).err())
-    } else {
-        None
-    };
 
     Ok(acceleration_status_from_parts(
-        selected_mode,
-        cuda_info.available,
-        cuda_info.device_summary,
-        cuda_info.detection_error,
+        "cpu",
+        false,
+        None,
+        None,
         cpu_runtime_installed,
-        cuda_runtime_installed,
-        cuda_circuit_reason(app),
-        prepare_error,
+        false,
+        None,
+        None,
     ))
 }
 
@@ -2424,169 +2397,22 @@ fn prepare_acceleration_runtime_for_app(
     app: &AppHandle,
     requested_mode: &str,
 ) -> Result<AccelerationStatus, String> {
-    let selected_mode = if requested_mode.trim().eq_ignore_ascii_case("cuda") {
-        "cuda"
-    } else {
-        "cpu"
-    };
-
-    if selected_mode == "cpu" {
-        return acceleration_status_for_app(app, requested_mode);
-    }
-
-    let cuda_info = query_nvidia_cuda_info();
-    if !cuda_info.available {
-        return acceleration_status_for_app(app, requested_mode);
-    }
-
-    let cuda_runtime_executable = find_sherpa_runtime_executable(app, SHERPA_CUDA_RUNTIME_NAME)?;
-    let mut should_trip_cuda_circuit = false;
-    let prepare_error = if let Some(cuda_runtime_executable) = cuda_runtime_executable {
-        match cuda_dependency_status(&cuda_runtime_executable) {
-            Ok(_) => match smoke_test_sherpa_runtime(&cuda_runtime_executable) {
-                Ok(()) => {
-                    mark_cuda_runtime_startup_checked(app, &cuda_runtime_executable);
-                    None
-                }
-                Err(error) => {
-                    should_trip_cuda_circuit = true;
-                    clear_cuda_runtime_startup_checked(app);
-                    Some(error)
-                }
-            },
-            Err(error) => {
-                clear_cuda_runtime_startup_checked(app);
-                Some(error)
-            }
-        }
-    } else {
-        clear_cuda_runtime_startup_checked(app);
-        None
-    };
-    if let Some(error) = prepare_error.as_ref() {
-        if should_trip_cuda_circuit {
-            trip_cuda_circuit(app, error.clone());
-        }
-    } else {
-        clear_cuda_circuit(app);
-    }
-    let cpu_runtime_installed =
-        sherpa_runtime_executable_path(app, SHERPA_CPU_RUNTIME_NAME)?.exists();
-    let cuda_runtime_installed =
-        find_sherpa_runtime_executable(app, SHERPA_CUDA_RUNTIME_NAME)?.is_some();
-
-    let mut status = acceleration_status_from_parts(
-        selected_mode,
-        cuda_info.available,
-        cuda_info.device_summary,
-        cuda_info.detection_error,
-        cpu_runtime_installed,
-        cuda_runtime_installed,
-        cuda_circuit_reason(app),
-        prepare_error,
-    );
-    if status.effective_mode == "cuda" {
-        status.message =
-            "Local CUDA runtime passed the startup check; failures will still fall back to CPU."
-                .to_string();
-    }
-
-    Ok(status)
+    acceleration_status_for_app(app, requested_mode)
 }
 
 fn resolve_sherpa_runtime(
-    app: &AppHandle,
+    _app: &AppHandle,
     engine: &InstalledEngineConfig,
-    requested_mode: &str,
+    _requested_mode: &str,
 ) -> ResolvedSherpaRuntime {
     let cpu_runtime_executable = PathBuf::from(&engine.executable);
     let cpu_executable = sherpa_cli_executable_for_engine(engine, &cpu_runtime_executable);
-    let mode = requested_mode.trim().to_ascii_lowercase();
-    if mode != "cuda" {
-        return ResolvedSherpaRuntime {
-            executable: cpu_executable,
-            mode: "cpu".to_string(),
-            fallback_reason: None,
-        };
-    }
-
-    if let Some(reason) = cuda_circuit_reason(app) {
-        return ResolvedSherpaRuntime {
-            executable: cpu_executable,
-            mode: "cpu".to_string(),
-            fallback_reason: Some(format!(
-                "CUDA is disabled for this session; using CPU: {reason}"
-            )),
-        };
-    }
-
-    let cuda_info = query_nvidia_cuda_info();
-    if !cuda_info.available {
-        return ResolvedSherpaRuntime {
-            executable: cpu_executable,
-            mode: "cpu".to_string(),
-            fallback_reason: Some(
-                "No usable NVIDIA CUDA environment was detected; using CPU.".to_string(),
-            ),
-        };
-    }
-
-    let cuda_runtime_executable = match find_sherpa_runtime_executable(
-        app,
-        SHERPA_CUDA_RUNTIME_NAME,
-    ) {
-        Ok(Some(executable)) => executable,
-        Ok(None) => {
-            return ResolvedSherpaRuntime {
-                executable: cpu_executable,
-                mode: "cpu".to_string(),
-                fallback_reason: Some(
-                    "No local CUDA-capable Sherpa runtime was found; using CPU without downloading during transcription."
-                        .to_string(),
-                ),
-            };
-        }
-        Err(error) => {
-            return ResolvedSherpaRuntime {
-                executable: cpu_executable,
-                mode: "cpu".to_string(),
-                fallback_reason: Some(format!("CUDA runtime lookup failed; using CPU: {error}")),
-            };
-        }
-    };
-    let cuda_executable = sherpa_cli_executable_for_engine(engine, &cuda_runtime_executable);
-
-    if let Err(error) = cuda_dependency_status(&cuda_executable) {
-        return ResolvedSherpaRuntime {
-            executable: cpu_executable,
-            mode: "cpu".to_string(),
-            fallback_reason: Some(format!(
-                "CUDA dependencies are incomplete; using CPU: {error}"
-            )),
-        };
-    }
-
-    if !is_cuda_runtime_startup_checked(app, &cuda_executable) {
-        if let Err(error) = smoke_test_sherpa_runtime(&cuda_executable) {
-            trip_cuda_circuit(app, error.clone());
-            return ResolvedSherpaRuntime {
-                executable: cpu_executable,
-                mode: "cpu".to_string(),
-                fallback_reason: Some(format!(
-                    "CUDA runtime startup check failed; using CPU: {error}"
-                )),
-            };
-        }
-        mark_cuda_runtime_startup_checked(app, &cuda_executable);
-    }
-
     ResolvedSherpaRuntime {
-        executable: cuda_executable,
-        mode: "cuda".to_string(),
+        executable: cpu_executable,
+        mode: "cpu".to_string(),
         fallback_reason: None,
     }
 }
-
 fn is_sherpa_streaming_cli_model(engine: &InstalledEngineConfig) -> bool {
     matches!(engine.model_id.as_str(), "sherpa-zipformer-zh")
 }
@@ -3648,15 +3474,7 @@ fn run_acceleration_smoke_test_inner(
     request: AccelerationSmokeTestRequest,
 ) -> Result<AccelerationSmokeTestResult, String> {
     let started_at = Instant::now();
-    let requested_mode = if request
-        .acceleration_mode
-        .trim()
-        .eq_ignore_ascii_case("cuda")
-    {
-        "cuda"
-    } else {
-        "cpu"
-    };
+    let requested_mode = "cpu";
     let model_dir = PathBuf::from(&request.model_dir);
     let engine = read_sherpa_engine(&model_dir)?;
     let cpu_executable = PathBuf::from(&engine.executable);
@@ -3665,7 +3483,7 @@ fn run_acceleration_smoke_test_inner(
             "Sherpa-ONNX executable does not exist. Configure the model again.".to_string(),
         );
     }
-    let cpu_cli_executable = sherpa_cli_executable_for_engine(&engine, &cpu_executable);
+    let _cpu_cli_executable = sherpa_cli_executable_for_engine(&engine, &cpu_executable);
 
     let smoke_dir = app
         .path()
@@ -3690,33 +3508,13 @@ fn run_acceleration_smoke_test_inner(
 
     let (used_mode, fallback_used, text, message) = match first_result {
         Ok(text) => {
-            let message = if runtime.mode == "cuda" {
-                "CUDA smoke test completed; silent audio does not need recognized text.".to_string()
-            } else if let Some(reason) = fallback_reason {
-                format!("CUDA is unavailable; CPU smoke test completed: {reason}")
+            let message = if let Some(reason) = fallback_reason {
+                format!("CPU smoke test completed: {reason}")
             } else {
                 "CPU smoke test completed; silent audio does not need recognized text.".to_string()
             };
-            let fallback_used = requested_mode == "cuda" && runtime.mode != "cuda";
+            let fallback_used = false;
             (runtime.mode, fallback_used, text, message)
-        }
-        Err(error) if runtime.mode != "cpu" => {
-            trip_cuda_circuit(&app, format!("CUDA smoke test failed: {error}"));
-            let cpu_text = transcribe_sherpa_wav_once(
-                &app,
-                &engine,
-                &cpu_cli_executable,
-                &smoke_wav,
-                performance,
-                false,
-                "cpu",
-            )?;
-            (
-                "cpu".to_string(),
-                true,
-                cpu_text,
-                format!("CUDA smoke test failed; CPU fallback succeeded: {error}"),
-            )
         }
         Err(error) => {
             let _ = fs::remove_file(&smoke_wav);
@@ -3878,24 +3676,7 @@ fn transcribe_file_with_sherpa(
             "Sherpa-ONNX executable does not exist. Configure the model again.".to_string(),
         );
     }
-    let cpu_cli_executable = sherpa_cli_executable_for_engine(&engine, &cpu_executable);
-
-    if request
-        .acceleration_mode
-        .trim()
-        .eq_ignore_ascii_case("cuda")
-    {
-        emit_transcription_progress(
-            &app,
-            request.task_id.as_deref(),
-            started_at,
-            "transcribing",
-            14,
-            "Checking local CUDA runtime; Hi-Voicer will not download CUDA files and will fall back to CPU if unavailable.".to_string(),
-            0,
-            0,
-        );
-    }
+    let _cpu_cli_executable = sherpa_cli_executable_for_engine(&engine, &cpu_executable);
 
     let runtime = resolve_sherpa_runtime(&app, &engine, &request.acceleration_mode);
     emit_transcription_progress(
@@ -3934,29 +3715,6 @@ fn transcribe_file_with_sherpa(
     );
     let raw_chunks = match chunk_result {
         Ok(chunks) => chunks,
-        Err(error) if runtime.mode != "cpu" => {
-            trip_cuda_circuit(&app, format!("CUDA transcription failed: {error}"));
-            emit_transcription_progress(
-                &app,
-                request.task_id.as_deref(),
-                started_at,
-                "transcribing",
-                20,
-                format!("CUDA transcription failed; falling back to CPU: {error}"),
-                0,
-                0,
-            );
-            transcribe_sherpa_wav(
-                &app,
-                &engine,
-                &cpu_cli_executable,
-                &sherpa_audio_path,
-                performance,
-                request.task_id.as_deref(),
-                started_at,
-                "cpu",
-            )?
-        }
         Err(error) => return Err(error),
     };
     let transcript_chunks = raw_chunks
@@ -6297,15 +6055,17 @@ mod tests {
     }
 
     #[test]
-    fn cuda_acceleration_uses_single_worker_performance() {
+    fn retired_acceleration_modes_do_not_change_performance() {
         let fast = transcription_performance("fast");
-        let cuda = performance_for_acceleration(fast, "cuda");
+        let retired_mode = performance_for_acceleration(fast, "cuda");
         let cpu = performance_for_acceleration(fast, "cpu");
 
-        assert_eq!(cuda.file_workers, 1);
-        assert_eq!(cuda.chunk_workers, 1);
-        assert_eq!(cuda.sherpa_threads, 2);
-        assert_eq!(cpu.chunk_workers, 3);
+        assert_eq!(retired_mode.file_workers, fast.file_workers);
+        assert_eq!(retired_mode.chunk_workers, fast.chunk_workers);
+        assert_eq!(retired_mode.sherpa_threads, fast.sherpa_threads);
+        assert_eq!(cpu.file_workers, fast.file_workers);
+        assert_eq!(cpu.chunk_workers, fast.chunk_workers);
+        assert_eq!(cpu.sherpa_threads, fast.sherpa_threads);
     }
 
     #[test]
@@ -7360,29 +7120,28 @@ Elapsed seconds: 0.16
     }
 
     #[test]
-    fn cuda_runtime_args_force_cuda_provider() {
+    fn retired_cuda_runtime_args_do_not_force_cuda_provider() {
         assert_eq!(
             sherpa_args_for_runtime("--tokens=a --model=b", Some(2), "cuda").expect("args"),
             vec![
                 "--tokens=a".to_string(),
                 "--model=b".to_string(),
-                "--num-threads=2".to_string(),
-                "--provider=cuda".to_string()
+                "--num-threads=2".to_string()
             ]
         );
     }
 
     #[test]
-    fn cuda_runtime_args_replace_existing_provider_forms() {
+    fn retired_cuda_runtime_args_preserve_existing_provider_forms() {
         assert_eq!(
             sherpa_args_for_runtime("--provider=cpu --tokens=a", None, "cuda").expect("args"),
-            vec!["--provider=cuda".to_string(), "--tokens=a".to_string()]
+            vec!["--provider=cpu".to_string(), "--tokens=a".to_string()]
         );
         assert_eq!(
             sherpa_args_for_runtime("--provider cpu --tokens=a", None, "cuda").expect("args"),
             vec![
                 "--provider".to_string(),
-                "cuda".to_string(),
+                "cpu".to_string(),
                 "--tokens=a".to_string()
             ]
         );

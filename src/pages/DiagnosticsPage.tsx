@@ -1,9 +1,8 @@
 import { FileAudio, FileDown, TestTube2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
-  getNativeAudioDiagnostics,
   getAccelerationStatus,
-  prepareAccelerationRuntime,
+  getNativeAudioDiagnostics,
   runAccelerationSmokeTest,
   saveTextFile,
   selectAudioFiles,
@@ -21,15 +20,7 @@ function fileNameFromPath(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
-function cudaEnvironmentText(status: AccelerationStatus) {
-  if (status.cudaDeviceSummary) {
-    return status.cudaDeviceSummary;
-  }
-
-  return status.cudaDetectionError || "未检测到 NVIDIA CUDA 环境。";
-}
-
-function buildGpuDiagnosticReport(
+function buildDiagnosticReport(
   settings: UserSettings,
   modelReady: boolean,
   items: DiagnosticItem[],
@@ -43,32 +34,27 @@ function buildGpuDiagnosticReport(
     "",
     "[设置]",
     `模型目录: ${settings.modelDir || "(未配置)"}`,
-    `加速模式: ${settings.accelerationMode}`,
+    `识别路径: ${settings.accelerationMode}`,
     `模型可用: ${modelReady ? "是" : "否"}`,
     "",
     "[基础诊断]",
     ...items.map((item) => `${item.label}: ${item.status} - ${item.detail}`),
     "",
-    "[GPU 状态]",
+    "[识别运行时]",
   ];
 
   if (status) {
     lines.push(
       `选择路径: ${status.selectedMode}`,
-      `有效路径: ${status.effectiveMode}`,
-      `NVIDIA 可用: ${status.cudaAvailable ? "是" : "否"}`,
-      `NVIDIA 信息: ${status.cudaDeviceSummary || "(无)"}`,
-      `NVIDIA 检测错误: ${status.cudaDetectionError || "(无)"}`,
-      `CPU runtime: ${status.cpuRuntimeInstalled ? "已安装" : "未安装/随模型准备"}`,
-      `CUDA runtime: ${status.cudaRuntimeInstalled ? "已找到" : "未找到，本软件不会自动下载"}`,
-      `CUDA 本次会话停用原因: ${status.cudaDisabledReason || "(无)"}`,
+      `实际路径: ${status.effectiveMode}`,
+      `CPU runtime: ${status.cpuRuntimeInstalled ? "已安装" : "随模型准备"}`,
       `状态消息: ${status.message}`,
     );
   } else {
     lines.push("状态尚未完成检测。");
   }
 
-  lines.push("", "[加速 smoke test]");
+  lines.push("", "[CPU smoke test]");
   if (smokeResult) {
     lines.push(
       `请求路径: ${smokeResult.requestedMode}`,
@@ -105,7 +91,6 @@ function buildGpuDiagnosticReport(
 
 export function DiagnosticsPage({ items, modelReady, settings }: DiagnosticsPageProps) {
   const [isTestingModel, setIsTestingModel] = useState(false);
-  const [isPreparingAcceleration, setIsPreparingAcceleration] = useState(false);
   const [isTestingAcceleration, setIsTestingAcceleration] = useState(false);
   const [testResult, setTestResult] = useState("");
   const [accelerationTestResult, setAccelerationTestResult] = useState("");
@@ -168,37 +153,26 @@ export function DiagnosticsPage({ items, modelReady, settings }: DiagnosticsPage
     }
   }
 
-  async function handlePrepareAcceleration() {
-    setIsPreparingAcceleration(true);
-    try {
-      const status = await prepareAccelerationRuntime(settings.accelerationMode);
-      setAccelerationStatus(status);
-    } finally {
-      setIsPreparingAcceleration(false);
-    }
-  }
-
   async function handleAccelerationSmokeTest() {
     setIsTestingAcceleration(true);
     setAccelerationTestResult("");
     try {
       const result = await runAccelerationSmokeTest(settings);
       setAccelerationSmokeResult(result);
-      const fallback = result.fallbackUsed ? "，已回退 CPU" : "";
-      setAccelerationTestResult(`${result.message} 用时 ${result.elapsedMs} ms，实际路径：${result.usedMode.toUpperCase()}${fallback}`);
+      setAccelerationTestResult(`${result.message} 用时 ${result.elapsedMs} ms，实际路径：${result.usedMode.toUpperCase()}`);
     } catch (error) {
-      setAccelerationTestResult(error instanceof Error ? error.message : "加速 smoke test 失败。");
+      setAccelerationTestResult(error instanceof Error ? error.message : "CPU smoke test 失败。");
     } finally {
       setIsTestingAcceleration(false);
     }
   }
 
-  async function handleSaveGpuReport() {
+  async function handleSaveReport() {
     const status = accelerationStatus ?? (await getAccelerationStatus(settings.accelerationMode));
     const audioDiagnostics = nativeAudioDiagnostics ?? (await getNativeAudioDiagnostics());
     setAccelerationStatus(status);
     setNativeAudioDiagnostics(audioDiagnostics);
-    const report = buildGpuDiagnosticReport(settings, modelReady, items, status, accelerationSmokeResult, audioDiagnostics);
+    const report = buildDiagnosticReport(settings, modelReady, items, status, accelerationSmokeResult, audioDiagnostics);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const path = await saveTextFile(`hi-voicer-diagnostics-${stamp}.txt`, report);
     if (path) {
@@ -251,9 +225,7 @@ export function DiagnosticsPage({ items, modelReady, settings }: DiagnosticsPage
           </div>
           <div className={`diagnostic-row diagnostic-row--${nativeAudioDiagnostics?.ffmpegInstalled ? "ok" : "warning"}`}>
             <strong>ffmpeg</strong>
-            <p>
-              {nativeAudioDiagnostics?.ffmpegPath || nativeAudioDiagnostics?.ffmpegDetail || "尚未检测"}
-            </p>
+            <p>{nativeAudioDiagnostics?.ffmpegPath || nativeAudioDiagnostics?.ffmpegDetail || "尚未检测"}</p>
           </div>
         </div>
         <button className="secondary-button" type="button" disabled={isCheckingNativeAudio} onClick={() => void handleRefreshNativeAudioDiagnostics()}>
@@ -282,43 +254,21 @@ export function DiagnosticsPage({ items, modelReady, settings }: DiagnosticsPage
 
       <section className="panel diagnostic-tool">
         <div>
-          <p className="section-label">GPU 加速</p>
-          <h2>当前加速路径</h2>
+          <p className="section-label">识别运行时</p>
+          <h2>当前识别路径</h2>
         </div>
         <div className="diagnostic-list">
-          <div
-            className={`diagnostic-row diagnostic-row--${
-              accelerationStatus?.effectiveMode === "cuda" ? "ok" : settings.accelerationMode === "cuda" ? "warning" : "ok"
-            }`}
-          >
-            <strong>{settings.accelerationMode === "cuda" ? "CUDA" : "CPU"}</strong>
-            <p>{accelerationStatus?.message ?? "正在检测加速环境..."}</p>
+          <div className="diagnostic-row diagnostic-row--ok">
+            <strong>CPU</strong>
+            <p>{accelerationStatus?.message ?? "正在检测识别运行时..."}</p>
           </div>
-          {accelerationStatus && (
-            <div className={`diagnostic-row diagnostic-row--${accelerationStatus.cudaAvailable ? "ok" : "warning"}`}>
-              <strong>NVIDIA</strong>
-              <p>{cudaEnvironmentText(accelerationStatus)}</p>
-            </div>
-          )}
           {accelerationStatus && (
             <div className="diagnostic-row diagnostic-row--ok">
               <strong>运行时</strong>
-              <p>
-                CPU {accelerationStatus.cpuRuntimeInstalled ? "已安装" : "随模型准备"} / CUDA{" "}
-                {accelerationStatus.cudaRuntimeInstalled ? "已找到" : "未找到，本软件不会自动下载"}
-              </p>
+              <p>CPU {accelerationStatus.cpuRuntimeInstalled ? "已安装" : "随模型准备"}</p>
             </div>
           )}
         </div>
-        <button
-          className="secondary-button"
-          type="button"
-          disabled={settings.accelerationMode !== "cuda" || isPreparingAcceleration}
-          onClick={() => void handlePrepareAcceleration()}
-        >
-          <TestTube2 size={17} />
-          {isPreparingAcceleration ? "正在检测 CUDA..." : "检测本地 CUDA"}
-        </button>
         <button
           className="secondary-button"
           type="button"
@@ -326,9 +276,9 @@ export function DiagnosticsPage({ items, modelReady, settings }: DiagnosticsPage
           onClick={() => void handleAccelerationSmokeTest()}
         >
           <TestTube2 size={17} />
-          {isTestingAcceleration ? "正在测试加速路径..." : "运行加速 smoke test"}
+          {isTestingAcceleration ? "正在运行 CPU smoke test..." : "运行 CPU smoke test"}
         </button>
-        <button className="secondary-button" type="button" onClick={() => void handleSaveGpuReport()}>
+        <button className="secondary-button" type="button" onClick={() => void handleSaveReport()}>
           <FileDown size={17} />
           保存诊断报告
         </button>

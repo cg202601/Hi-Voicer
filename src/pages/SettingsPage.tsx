@@ -1,4 +1,4 @@
-import { Check, Cpu, Download, FolderOpen, Keyboard, Mic, MonitorSpeaker, Moon, Sun, Volume2, Zap } from "lucide-react";
+import { Check, Cpu, Download, FolderOpen, Keyboard, Mic, MonitorSpeaker, Moon, Sun, Volume2 } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { SettingRow } from "../components/SettingRow";
@@ -255,18 +255,7 @@ export function SettingsPage({ settings, onOpenRecordingsFolder, onSettingsChang
             <Cpu size={16} />
             CPU
           </button>
-          <button
-            className={settings.accelerationMode === "cuda" ? "segment-button segment-button--active" : "segment-button"}
-            type="button"
-            title="Experimental NVIDIA CUDA mode. Hi-Voicer will not download CUDA files automatically."
-            onClick={() => {
-              onSettingsChange({ ...settings, accelerationMode: "cuda" });
-              setModelMessage("CUDA experimental mode is selected. Hi-Voicer only checks local NVIDIA/CUDA files and falls back to CPU if unavailable.");
-            }}
-          >
-            <Zap size={16} />
-            CUDA (experimental)
-          </button>
+
         </div>
       </SettingRow>
 

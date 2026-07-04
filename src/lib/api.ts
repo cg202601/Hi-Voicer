@@ -25,7 +25,7 @@ const STORAGE_KEY = "hi-voicer-settings";
 const pasteModes = ["direct", "clipboard"] as const;
 const recordingModes = ["hold", "toggle", "audioOnly"] as const;
 const recordingSources = ["microphone", "system", "microphoneAndSystem"] as const;
-const accelerationModes = ["cpu", "cuda"] as const;
+const accelerationModes = ["cpu"] as const;
 const themeModes = ["light", "dark"] as const;
 
 function enumValue<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -332,17 +332,14 @@ export async function getAccelerationStatus(accelerationMode: UserSettings["acce
   } catch {
     return {
       selectedMode: accelerationMode,
-      effectiveMode: accelerationMode === "cuda" ? "cpu" : "cpu",
+      effectiveMode: "cpu",
       cudaAvailable: false,
       cudaDeviceSummary: null,
       cudaDetectionError: "浏览器预览模式无法运行 nvidia-smi。",
       cpuRuntimeInstalled: false,
       cudaRuntimeInstalled: false,
       cudaDisabledReason: null,
-      message:
-        accelerationMode === "cuda"
-          ? "浏览器预览模式无法检测 CUDA；实际转录会在桌面端检测并自动回退 CPU。"
-          : "当前选择 CPU，兼容性最高。",
+      message: "当前选择 CPU，兼容性最高。",
     };
   }
 }

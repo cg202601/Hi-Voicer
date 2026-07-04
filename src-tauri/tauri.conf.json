@@ -61,7 +61,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.ico"],
-    "resources": ["resources/engines/**/*"]
+    "icon": ["icons/icon.ico"]
   }
 }

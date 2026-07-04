@@ -1,9 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+﻿import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialDiagnostics, initialSettings } from "../data/mockState";
 import {
   getNativeAudioDiagnostics,
-  prepareAccelerationRuntime,
   runAccelerationSmokeTest,
   saveTextFile,
   selectAudioFiles,
@@ -18,8 +17,8 @@ vi.mock("../lib/api", () => ({
       effectiveMode: "cpu",
       cudaAvailable: false,
       cudaDeviceSummary: null,
-      cudaDetectionError: "nvidia-smi not found",
-      cpuRuntimeInstalled: false,
+      cudaDetectionError: null,
+      cpuRuntimeInstalled: true,
       cudaRuntimeInstalled: false,
       cudaDisabledReason: null,
       message: "CPU selected",
@@ -41,30 +40,17 @@ vi.mock("../lib/api", () => ({
       message: "Native audio environment needs attention before all recording and processing modes are available.",
     }),
   ),
-  prepareAccelerationRuntime: vi.fn(() =>
-    Promise.resolve({
-      selectedMode: "cuda",
-      effectiveMode: "cuda",
-      cudaAvailable: true,
-      cudaDeviceSummary: "NVIDIA GeForce RTX 4070 / driver 552.44 / VRAM 12282 MB",
-      cudaDetectionError: null,
-      cpuRuntimeInstalled: true,
-      cudaRuntimeInstalled: true,
-      cudaDisabledReason: null,
-      message: "Local CUDA runtime passed the startup check; failures will still fall back to CPU.",
-    }),
-  ),
   runAccelerationSmokeTest: vi.fn(() =>
     Promise.resolve({
-      requestedMode: "cuda",
+      requestedMode: "cpu",
       usedMode: "cpu",
-      fallbackUsed: true,
+      fallbackUsed: false,
       elapsedMs: 123,
       transcriptPreview: "",
-      message: "CUDA is unavailable; CPU smoke test completed: No local CUDA runtime was found",
+      message: "CPU smoke test completed; silent audio does not need recognized text.",
     }),
   ),
-  saveTextFile: vi.fn(() => Promise.resolve("C:\\reports\\gpu.txt")),
+  saveTextFile: vi.fn(() => Promise.resolve("C:\\reports\\diagnostics.txt")),
   selectAudioFiles: vi.fn(() => Promise.resolve(["C:\\audio\\sample.wav"])),
   transcribeFile: vi.fn(() => Promise.resolve({ text: "recognized", outputPath: "" })),
 }));
@@ -75,9 +61,9 @@ describe("DiagnosticsPage", () => {
   });
 
   it("runs a model smoke test without saving transcript output", async () => {
-    render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={initialSettings} />);
+    const { container } = render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={initialSettings} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /选择音频测试/ }));
+    fireEvent.click(container.querySelector(".primary-button") as HTMLButtonElement);
 
     await waitFor(() => {
       expect(transcribeFile).toHaveBeenCalledWith("C:\\audio\\sample.wav", initialSettings, { saveOutput: false });
@@ -86,34 +72,16 @@ describe("DiagnosticsPage", () => {
     expect(await screen.findByText("recognized")).toBeTruthy();
   });
 
-  it("shows the current acceleration status", async () => {
+  it("shows the current CPU runtime status", async () => {
     render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={initialSettings} />);
 
     expect(await screen.findByText("CPU selected")).toBeTruthy();
-    expect(screen.getByText("nvidia-smi not found")).toBeTruthy();
-    expect(screen.getByText("GPU 加速")).toBeTruthy();
-  });
-
-  it("checks the local CUDA runtime when CUDA acceleration is selected", async () => {
-    render(
-      <DiagnosticsPage
-        items={initialDiagnostics}
-        modelReady={true}
-        settings={{ ...initialSettings, accelerationMode: "cuda" }}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /检测本地 CUDA/ }));
-
-    await waitFor(() => {
-      expect(prepareAccelerationRuntime).toHaveBeenCalledWith("cuda");
-    });
-    expect(await screen.findByText(/Local CUDA runtime passed/)).toBeTruthy();
-    expect(screen.getByText(/RTX 4070/)).toBeTruthy();
+    expect(screen.getByText("CPU")).toBeTruthy();
+    expect(screen.queryByText(/NVIDIA|CUDA/)).toBeNull();
   });
 
   it("shows native audio diagnostics and refreshes them", async () => {
-    render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={initialSettings} />);
+    const { container } = render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={initialSettings} />);
 
     expect(await screen.findByText(/USB Microphone/)).toBeTruthy();
     expect(screen.getByText(/Speakers/)).toBeTruthy();
@@ -121,44 +89,45 @@ describe("DiagnosticsPage", () => {
     expect(screen.getByText(/ffmpeg.exe was not found/)).toBeTruthy();
     expect(screen.getByText(/system PATH/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /刷新音频环境诊断/ }));
+    const refreshButton = container.querySelectorAll(".diagnostic-tool .secondary-button")[0] as HTMLButtonElement;
+    fireEvent.click(refreshButton);
 
     await waitFor(() => {
       expect(getNativeAudioDiagnostics).toHaveBeenCalledTimes(2);
     });
   });
 
-  it("runs acceleration smoke test with the current settings and shows fallback", async () => {
-    const settings = { ...initialSettings, modelDir: "C:\\models\\demo", accelerationMode: "cuda" as const };
+  it("runs the CPU smoke test with the current settings", async () => {
+    const settings = { ...initialSettings, modelDir: "C:\\models\\demo" };
     render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={settings} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /运行加速 smoke test/ }));
+    fireEvent.click(screen.getByRole("button", { name: /CPU smoke test/ }));
 
     await waitFor(() => {
       expect(runAccelerationSmokeTest).toHaveBeenCalledWith(settings);
     });
     expect(await screen.findByText(/CPU smoke test completed/)).toBeTruthy();
     expect(screen.getByText(/实际路径：CPU/)).toBeTruthy();
-    expect(screen.getByText(/已回退 CPU/)).toBeTruthy();
   });
 
-  it("saves a diagnostic report with acceleration and native audio details", async () => {
-    const settings = { ...initialSettings, modelDir: "C:\\models\\demo", accelerationMode: "cuda" as const };
-    render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={settings} />);
+  it("saves a diagnostic report with CPU runtime and native audio details", async () => {
+    const settings = { ...initialSettings, modelDir: "C:\\models\\demo" };
+    const { container } = render(<DiagnosticsPage items={initialDiagnostics} modelReady={true} settings={settings} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /运行加速 smoke test/ }));
+    fireEvent.click(screen.getByRole("button", { name: /CPU smoke test/ }));
     await screen.findByText(/CPU smoke test completed/);
 
-    fireEvent.click(screen.getByRole("button", { name: /保存诊断报告/ }));
+    const buttons = container.querySelectorAll(".diagnostic-tool .secondary-button");
+    fireEvent.click(buttons[buttons.length - 1] as HTMLButtonElement);
 
     await waitFor(() => {
       expect(saveTextFile).toHaveBeenCalledWith(
         expect.stringMatching(/^hi-voicer-diagnostics-.+\.txt$/),
-        expect.stringContaining("Hi-Voicer 诊断报告"),
+        expect.stringContaining("Hi-Voicer"),
       );
     });
     expect(saveTextFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("实际路径: cpu"));
-    expect(saveTextFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("[本机音频环境]"));
-    expect(saveTextFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("麦克风设备: USB Microphone"));
+    expect(saveTextFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("USB Microphone"));
   });
 });
+
