@@ -392,6 +392,8 @@ export async function runDirectMlProbe(settings: UserSettings): Promise<DirectMl
       directmlSessionReady: false,
       directmlSessionError: error instanceof Error ? error.message : "DirectML PoC probe failed.",
       onnxRuntimeBuild: null,
+      modelInputs: [],
+      modelOutputs: [],
       modelId: null,
       modelName: null,
       modelDir,

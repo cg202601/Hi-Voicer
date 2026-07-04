@@ -408,6 +408,16 @@ struct DirectMlAdapterInfo {
     status: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectMlSessionProbeCliResult {
+    ok: bool,
+    message: String,
+    model_inputs: Vec<String>,
+    model_outputs: Vec<String>,
+    onnx_runtime_build: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DirectMlProbeResult {
@@ -416,6 +426,8 @@ struct DirectMlProbeResult {
     directml_session_ready: bool,
     directml_session_error: Option<String>,
     onnx_runtime_build: Option<String>,
+    model_inputs: Vec<String>,
+    model_outputs: Vec<String>,
     model_id: Option<String>,
     model_name: Option<String>,
     model_dir: String,
@@ -3587,7 +3599,16 @@ fn is_directml_candidate_adapter(adapter: &DirectMlAdapterInfo) -> bool {
         && !name.contains("render driver")
 }
 
-fn create_directml_sensevoice_session(model_path: &Path) -> Result<String, String> {
+fn ort_outlet_summaries(outlets: &[ort::value::Outlet]) -> Vec<String> {
+    outlets
+        .iter()
+        .map(|outlet| format!("{}: {}", outlet.name(), outlet.dtype()))
+        .collect()
+}
+
+fn create_directml_sensevoice_session(
+    model_path: &Path,
+) -> Result<DirectMlSessionProbeCliResult, String> {
     if !cfg!(windows) {
         return Err("DirectML is only available on Windows.".to_string());
     }
@@ -3627,11 +3648,87 @@ fn create_directml_sensevoice_session(model_path: &Path) -> Result<String, Strin
         .map_err(|error| format!("Failed to create DirectML SenseVoice ONNX session: {error}"))?;
     let input_count = session.inputs().len();
     let output_count = session.outputs().len();
+    let inputs = ort_outlet_summaries(session.inputs());
+    let outputs = ort_outlet_summaries(session.outputs());
     drop(session);
 
-    Ok(format!(
-        "DirectML SenseVoice session created; inputs: {input_count}, outputs: {output_count}"
+    Ok(DirectMlSessionProbeCliResult {
+        ok: true,
+        message: format!(
+            "DirectML SenseVoice session created; inputs: {input_count}, outputs: {output_count}"
+        ),
+        model_inputs: inputs,
+        model_outputs: outputs,
+        onnx_runtime_build: Some(ort::info().to_string()),
+    })
+}
+
+fn create_directml_sensevoice_session_in_child(
+    model_path: &Path,
+) -> Result<DirectMlSessionProbeCliResult, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut command = Command::new(executable);
+    command
+        .arg("--hi-voicer-directml-probe")
+        .arg(model_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = run_command_with_timeout(
+        &mut command,
+        Duration::from_secs(30),
+        "DirectML SenseVoice session child probe",
+    )
+    .map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if output.status.success() {
+        return serde_json::from_str::<DirectMlSessionProbeCliResult>(&stdout).map_err(|error| {
+            format!("DirectML child probe returned invalid JSON: {error}; stdout: {stdout}")
+        });
+    }
+
+    let code = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "terminated by signal or native exception".to_string());
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+    Err(format!(
+        "DirectML child probe failed with exit code {code}: {detail}"
     ))
+}
+
+pub fn run_cli_mode() -> bool {
+    let mut args = std::env::args_os();
+    let _program = args.next();
+    let Some(mode) = args.next() else {
+        return false;
+    };
+    if mode != "--hi-voicer-directml-probe" {
+        return false;
+    }
+
+    let Some(model_path) = args.next() else {
+        eprintln!("missing model path");
+        std::process::exit(2);
+    };
+
+    match create_directml_sensevoice_session(&PathBuf::from(model_path)) {
+        Ok(result) => match serde_json::to_string(&result) {
+            Ok(raw) => println!("{raw}"),
+            Err(error) => {
+                eprintln!("failed to serialize DirectML probe result: {error}");
+                std::process::exit(3);
+            }
+        },
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+    true
 }
 
 fn directml_probe_for_model_dir(model_dir: &str) -> DirectMlProbeResult {
@@ -3656,16 +3753,30 @@ fn directml_probe_for_model_dir(model_dir: &str) -> DirectMlProbeResult {
     let adapters = query_directml_candidate_adapters();
     let directml_candidate = adapters.iter().any(is_directml_candidate_adapter);
     let model_ready = is_sensevoice && missing_files.is_empty();
-    let onnx_runtime_build = Some(ort::info().to_string());
     let directml_session_result = if model_ready && directml_candidate {
-        create_directml_sensevoice_session(&model_path.join("model.int8.onnx"))
+        create_directml_sensevoice_session_in_child(&model_path.join("model.int8.onnx"))
     } else {
         Err("DirectML session check skipped because prerequisites are incomplete.".to_string())
     };
-    let directml_session_ready = directml_session_result.is_ok();
+    let directml_session_ready = directml_session_result
+        .as_ref()
+        .map(|result| result.ok)
+        .unwrap_or(false);
     let directml_session_error = directml_session_result.as_ref().err().cloned();
-    let message = if let Ok(session_message) = &directml_session_result {
-        session_message.clone()
+    let onnx_runtime_build = directml_session_result
+        .as_ref()
+        .ok()
+        .and_then(|result| result.onnx_runtime_build.clone());
+    let model_inputs = directml_session_result
+        .as_ref()
+        .map(|result| result.model_inputs.clone())
+        .unwrap_or_default();
+    let model_outputs = directml_session_result
+        .as_ref()
+        .map(|result| result.model_outputs.clone())
+        .unwrap_or_default();
+    let message = if let Ok(session_result) = &directml_session_result {
+        session_result.message.clone()
     } else if !is_sensevoice {
         "DirectML PoC currently only targets SenseVoiceSmall.".to_string()
     } else if !missing_files.is_empty() {
@@ -3693,6 +3804,8 @@ fn directml_probe_for_model_dir(model_dir: &str) -> DirectMlProbeResult {
         directml_session_ready,
         directml_session_error,
         onnx_runtime_build,
+        model_inputs,
+        model_outputs,
         model_id,
         model_name,
         model_dir: model_dir.to_string(),

@@ -71,6 +71,8 @@ function buildDiagnosticReport(
       "DirectML session ready: " + (directMlProbeResult.directmlSessionReady ? "yes" : "no"),
       "DirectML session error: " + (directMlProbeResult.directmlSessionError || "(none)"),
       "ONNX Runtime: " + (directMlProbeResult.onnxRuntimeBuild || "(unknown)"),
+      "Model inputs: " + (directMlProbeResult.modelInputs.join(" | ") || "(unknown)"),
+      "Model outputs: " + (directMlProbeResult.modelOutputs.join(" | ") || "(unknown)"),
       "Model: " + (directMlProbeResult.modelName || directMlProbeResult.modelId || "(none)"),
       "Missing files: " + (directMlProbeResult.missingFiles.join(", ") || "(none)"),
       "Adapters: " + (directMlProbeResult.adapters.map((adapter) => adapter.name).join(" | ") || "(none)"),
@@ -339,6 +341,18 @@ export function DiagnosticsPage({ items, modelReady, settings }: DiagnosticsPage
               <strong>DirectML session</strong>
               <p>{directMlProbeResult.directmlSessionReady ? directMlProbeResult.message : directMlProbeResult.directmlSessionError || directMlProbeResult.message}</p>
             </div>
+            {directMlProbeResult.modelInputs.length > 0 && (
+              <div className="diagnostic-row diagnostic-row--ok">
+                <strong>Model inputs</strong>
+                <p>{directMlProbeResult.modelInputs.join(" | ")}</p>
+              </div>
+            )}
+            {directMlProbeResult.modelOutputs.length > 0 && (
+              <div className="diagnostic-row diagnostic-row--ok">
+                <strong>Model outputs</strong>
+                <p>{directMlProbeResult.modelOutputs.join(" | ")}</p>
+              </div>
+            )}
             {directMlProbeResult.onnxRuntimeBuild && (
               <div className="diagnostic-row diagnostic-row--ok">
                 <strong>ONNX Runtime</strong>

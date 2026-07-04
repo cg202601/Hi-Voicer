@@ -58,6 +58,8 @@ vi.mock("../lib/api", () => ({
       directmlSessionReady: true,
       directmlSessionError: null,
       onnxRuntimeBuild: "ORT Build Info: DirectML test build",
+      modelInputs: ["speech: Tensor<Float32>(1, feat_len, 80)", "language: Tensor<Int64>(1)"],
+      modelOutputs: ["logits: Tensor<Float32>(1, dyn, 250000)"],
       modelId: "sensevoice-small",
       modelName: "SenseVoiceSmall",
       modelDir: "C:\\models\\sensevoice-small",
@@ -132,6 +134,7 @@ describe("DiagnosticsPage", () => {
       expect(runDirectMlProbe).toHaveBeenCalledWith(settings);
     });
     expect(await screen.findAllByText(/DirectML SenseVoice session created/)).toHaveLength(2);
+    expect(screen.getByText(/speech: Tensor<Float32>/)).toBeTruthy();
     expect(screen.getByText("NVIDIA GeForce RTX 3060")).toBeTruthy();
   });
 

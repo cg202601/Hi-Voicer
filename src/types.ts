@@ -220,6 +220,8 @@ export interface DirectMlProbeResult {
   directmlSessionReady: boolean;
   directmlSessionError?: string | null;
   onnxRuntimeBuild?: string | null;
+  modelInputs: string[];
+  modelOutputs: string[];
   modelId?: string | null;
   modelName?: string | null;
   modelDir: string;
