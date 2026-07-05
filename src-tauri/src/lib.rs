@@ -3664,6 +3664,171 @@ struct SenseVoiceLfrFeatures {
     values: Vec<f32>,
 }
 
+fn read_protobuf_varint(bytes: &[u8], offset: &mut usize) -> Option<u64> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+
+    while *offset < bytes.len() && shift < 64 {
+        let byte = bytes[*offset];
+        *offset += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+        shift += 7;
+    }
+
+    None
+}
+
+fn skip_protobuf_field(bytes: &[u8], offset: &mut usize, wire_type: u64) -> bool {
+    match wire_type {
+        0 => read_protobuf_varint(bytes, offset).is_some(),
+        1 => {
+            *offset = offset.saturating_add(8);
+            *offset <= bytes.len()
+        }
+        2 => {
+            let Some(length) = read_protobuf_varint(bytes, offset) else {
+                return false;
+            };
+            let Ok(length) = usize::try_from(length) else {
+                return false;
+            };
+            *offset = offset.saturating_add(length);
+            *offset <= bytes.len()
+        }
+        5 => {
+            *offset = offset.saturating_add(4);
+            *offset <= bytes.len()
+        }
+        _ => false,
+    }
+}
+
+fn sentencepiece_piece_from_vocab_message(message: &[u8]) -> Option<String> {
+    let mut offset = 0usize;
+
+    while offset < message.len() {
+        let key = read_protobuf_varint(message, &mut offset)?;
+        let field_number = key >> 3;
+        let wire_type = key & 0x07;
+
+        if field_number == 1 && wire_type == 2 {
+            let length = usize::try_from(read_protobuf_varint(message, &mut offset)?).ok()?;
+            let end = offset.checked_add(length)?;
+            if end > message.len() {
+                return None;
+            }
+            return String::from_utf8(message[offset..end].to_vec()).ok();
+        }
+
+        if !skip_protobuf_field(message, &mut offset, wire_type) {
+            return None;
+        }
+    }
+
+    None
+}
+
+fn load_sentencepiece_pieces(tokenizer_path: &Path) -> Result<Vec<String>, String> {
+    let bytes = fs::read(tokenizer_path).map_err(|error| {
+        format!(
+            "Failed to read SentencePiece tokenizer {}: {error}",
+            tokenizer_path.display()
+        )
+    })?;
+    let mut offset = 0usize;
+    let mut pieces = Vec::new();
+
+    while offset < bytes.len() {
+        let Some(key) = read_protobuf_varint(&bytes, &mut offset) else {
+            break;
+        };
+        let field_number = key >> 3;
+        let wire_type = key & 0x07;
+
+        if field_number == 1 && wire_type == 2 {
+            let Some(length) = read_protobuf_varint(&bytes, &mut offset) else {
+                break;
+            };
+            let length = usize::try_from(length)
+                .map_err(|_| "SentencePiece vocab message is too large.".to_string())?;
+            let end = offset
+                .checked_add(length)
+                .ok_or_else(|| "SentencePiece vocab message length overflowed.".to_string())?;
+            if end > bytes.len() {
+                return Err("SentencePiece tokenizer ended inside a vocab message.".to_string());
+            }
+            if let Some(piece) = sentencepiece_piece_from_vocab_message(&bytes[offset..end]) {
+                pieces.push(piece);
+            }
+            offset = end;
+            continue;
+        }
+
+        if !skip_protobuf_field(&bytes, &mut offset, wire_type) {
+            return Err(
+                "SentencePiece tokenizer contains an unsupported protobuf field.".to_string(),
+            );
+        }
+    }
+
+    if pieces.is_empty() {
+        return Err("SentencePiece tokenizer did not contain any vocab pieces.".to_string());
+    }
+
+    Ok(pieces)
+}
+
+fn decode_sentencepiece_pieces(token_ids: &[i32], pieces: &[String]) -> String {
+    let mut text = String::new();
+
+    for token_id in token_ids {
+        let Ok(index) = usize::try_from(*token_id) else {
+            continue;
+        };
+        let Some(piece) = pieces.get(index) else {
+            continue;
+        };
+        text.push_str(&piece.replace('▁', " "));
+    }
+
+    text.trim().to_string()
+}
+
+fn ctc_greedy_decode_top1(
+    topk_indices: &[i32],
+    topk_shape: &[usize],
+    valid_frames: usize,
+    pieces: &[String],
+) -> (Vec<i32>, String) {
+    let prompt_len = 4usize;
+    let blank_id = 0i32;
+    let time_steps = topk_shape.get(1).copied().unwrap_or(0);
+    let top_k = topk_shape.get(2).copied().unwrap_or(100);
+    let end = time_steps.min(valid_frames.saturating_add(prompt_len));
+    let mut collapsed = Vec::new();
+    let mut previous: Option<i32> = None;
+
+    for frame in prompt_len..end {
+        let offset = frame.saturating_mul(top_k);
+        let Some(token_id) = topk_indices.get(offset).copied() else {
+            break;
+        };
+        if Some(token_id) == previous {
+            continue;
+        }
+        previous = Some(token_id);
+        if token_id != blank_id {
+            collapsed.push(token_id);
+        }
+    }
+
+    let text = decode_sentencepiece_pieces(&collapsed, pieces);
+    (collapsed, text)
+}
+
 fn hz_to_mel(freq: f32) -> f32 {
     2595.0 * (1.0 + freq / 700.0).log10()
 }
@@ -4059,6 +4224,7 @@ fn create_directml_sensevoice_ctc_warmup_session(
 fn create_directml_sensevoice_chain_smoke_session(
     encoder_path: &Path,
     ctc_path: &Path,
+    tokenizer_path: &Path,
 ) -> Result<DirectMlSessionProbeCliResult, String> {
     if !cfg!(windows) {
         return Err("DirectML is only available on Windows.".to_string());
@@ -4066,6 +4232,8 @@ fn create_directml_sensevoice_chain_smoke_session(
 
     use half::f16;
     use ort::{inputs, value::Tensor};
+
+    let pieces = load_sentencepiece_pieces(tokenizer_path)?;
 
     let mut encoder_session = directml_session_builder()?
         .commit_from_file(encoder_path)
@@ -4137,9 +4305,15 @@ fn create_directml_sensevoice_chain_smoke_session(
     let ctc_outputs = ctc_session
         .run(inputs!["enc_out" => enc_out])
         .map_err(|error| format!("DirectML split SenseVoice CTC run failed: {error}"))?;
-    let (_indices_shape, topk_indices) = ctc_outputs[1]
+    let (indices_shape, topk_indices) = ctc_outputs[1]
         .try_extract_tensor::<i32>()
         .map_err(|error| format!("Failed to extract CTC topk_indices tensor: {error}"))?;
+    let topk_shape = indices_shape
+        .iter()
+        .map(|dim| usize::try_from(*dim).map_err(|_| format!("Invalid CTC topk dim: {dim}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (collapsed_ids, decoded_text) =
+        ctc_greedy_decode_top1(&topk_indices, &topk_shape, valid_frames, &pieces);
     let token_preview = topk_indices
         .iter()
         .step_by(100)
@@ -4169,8 +4343,14 @@ fn create_directml_sensevoice_chain_smoke_session(
     Ok(DirectMlSessionProbeCliResult {
         ok: true,
         message: format!(
-            "DirectML split SenseVoice encoder->CTC smoke completed; LFR frames: {valid_frames}; top1 token ids: {}",
-            token_preview.join(", ")
+            "DirectML split SenseVoice encoder->CTC smoke completed; LFR frames: {valid_frames}; top1 token ids: {}; collapsed ids: {}; decoded text: {}",
+            token_preview.join(", "),
+            collapsed_ids
+                .iter()
+                .map(|token| token.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            decoded_text
         ),
         model_inputs,
         model_outputs,
@@ -4294,9 +4474,14 @@ pub fn run_cli_mode() -> bool {
                 eprintln!("missing CTC path");
                 std::process::exit(2);
             };
+            let Some(tokenizer_path) = args.next() else {
+                eprintln!("missing tokenizer path");
+                std::process::exit(2);
+            };
             create_directml_sensevoice_chain_smoke_session(
                 &PathBuf::from(encoder_path),
                 &PathBuf::from(ctc_path),
+                &PathBuf::from(tokenizer_path),
             )
         }
         _ => return false,
@@ -4431,7 +4616,11 @@ fn create_directml_split_sensevoice_sessions_in_child(
 ) -> Result<DirectMlSessionProbeCliResult, String> {
     create_directml_session_in_child_with_args(
         "--hi-voicer-directml-sensevoice-chain-smoke",
-        &[candidate.encoder.as_path(), candidate.ctc.as_path()],
+        &[
+            candidate.encoder.as_path(),
+            candidate.ctc.as_path(),
+            candidate.tokenizer.as_path(),
+        ],
         Duration::from_secs(90),
         "DirectML SenseVoice split encoder-to-CTC child probe",
     )
@@ -4592,10 +4781,9 @@ fn directml_probe_for_model_dir(
             .unwrap_or_else(|| "DirectML SenseVoice session check failed.".to_string())
     };
     let next_step = if split_model_session_ready {
-        "Split SenseVoice encoder/CTC sessions work with DirectML; next implement fixed-shape audio feature input and CTC decoding behind an experimental engine.".to_string()
+        "Split SenseVoice DirectML encoder->CTC->tokenizer smoke works; next wire real audio/video input and chunk merging behind an experimental engine.".to_string()
     } else if directml_session_ready {
-        "Add the DirectML audio feature-extraction and decoder path behind an experimental toggle."
-            .to_string()
+        "Add the DirectML real-media transcription path behind an experimental toggle.".to_string()
     } else if provider_session_ready && split_model_ready {
         "DirectML provider works, but split SenseVoice session creation failed; inspect unsupported operators or try another ONNX Runtime version.".to_string()
     } else if provider_session_ready && model_ready {
@@ -7392,6 +7580,81 @@ mod tests {
         assert!(features.frames >= 1);
         assert_eq!(features.values.len(), features.frames * 560);
         assert!(features.values.iter().all(|value| value.is_finite()));
+    }
+
+    fn protobuf_varint(value: u64) -> Vec<u8> {
+        let mut value = value;
+        let mut bytes = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+        bytes
+    }
+
+    fn sentencepiece_test_model(pieces: &[&str]) -> Vec<u8> {
+        let mut model = Vec::new();
+        for piece in pieces {
+            let mut vocab_message = Vec::new();
+            vocab_message.push(0x0a);
+            vocab_message.extend(protobuf_varint(piece.as_bytes().len() as u64));
+            vocab_message.extend(piece.as_bytes());
+            vocab_message.push(0x15);
+            vocab_message.extend([0, 0, 0, 0]);
+
+            model.push(0x0a);
+            model.extend(protobuf_varint(vocab_message.len() as u64));
+            model.extend(vocab_message);
+        }
+        model
+    }
+
+    #[test]
+    fn parses_sentencepiece_vocab_pieces() {
+        let path = std::env::temp_dir().join(format!(
+            "hi-voicer-tokenizer-test-{}-{}.model",
+            std::process::id(),
+            unix_timestamp_millis().unwrap_or(0)
+        ));
+        fs::write(
+            &path,
+            sentencepiece_test_model(&["<unk>", "<s>", "</s>", "▁hello", "世界"]),
+        )
+        .expect("write tokenizer");
+
+        let pieces = load_sentencepiece_pieces(&path).expect("parse tokenizer");
+
+        assert_eq!(pieces[0], "<unk>");
+        assert_eq!(pieces[3], "▁hello");
+        assert_eq!(pieces[4], "世界");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ctc_greedy_decode_skips_prompt_blank_and_repeats() {
+        let pieces = vec![
+            "<blank>".to_string(),
+            "<s>".to_string(),
+            "</s>".to_string(),
+            "▁你".to_string(),
+            "好".to_string(),
+        ];
+        let mut topk = vec![0i32; 1 * 9 * 2];
+        for (frame, token) in [1, 2, 3, 3, 0, 4, 4, 0, 3].iter().enumerate() {
+            topk[frame * 2] = *token;
+        }
+
+        let (ids, text) = ctc_greedy_decode_top1(&topk, &[1, 9, 2], 4, &pieces);
+
+        assert_eq!(ids, vec![4]);
+        assert_eq!(text, "好");
     }
 
     #[test]
